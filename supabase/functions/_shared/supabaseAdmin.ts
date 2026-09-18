@@ -1,4 +1,4 @@
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 // service_role client：只在 Edge Function（後端）使用，絕不可暴露給前端。
 export function supabaseAdmin() {
