@@ -5,6 +5,21 @@ import { useEffect, useRef } from "react";
 import { Navigate } from "react-router-dom";
 import { useRooms, useCreateRoom } from "./useRooms";
 
+// Supabase 的錯誤（PostgrestError 等）不是 Error 實例，訊息在 .message 屬性上；
+// 直接 String(error) 對一般物件只會印出 "[object Object]"。
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 export function RoomGate() {
   const { data: rooms, isLoading, error: roomsError } = useRooms();
   const createRoom = useCreateRoom();
@@ -22,7 +37,7 @@ export function RoomGate() {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-2 px-4 text-center text-slate-500">
         <p>建立協作室失敗，請重新整理再試一次。</p>
-        <p className="max-w-md text-xs text-red-500">{error instanceof Error ? error.message : String(error)}</p>
+        <p className="max-w-md text-xs text-red-500">{getErrorMessage(error)}</p>
       </div>
     );
   }
