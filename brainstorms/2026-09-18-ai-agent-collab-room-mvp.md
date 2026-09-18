@@ -31,4 +31,12 @@
   3. 需要進一步問清楚「一點錢」的預算範圍，才能決定要接入哪些模型（例如是否用便宜的 mini/flash 模型，還是也要接旗艦模型）。
 - 待釐清：使用者是否已經有 OpenAI／Anthropic／Google 的 API key？若沒有，是否需要協助申請流程？→ 待下一題釐清
 
+### Q4：目前有哪些 API key？每月預算？
+- 問題：(a) 是否已有 OpenAI/Anthropic/Google 的 API key (b) 每月能接受的 API 費用預算數字
+- 已記錄：使用者原話——「目前有Anthropic api key，每月基本預算30美金，依專案大小可提升上限」。
+  - **目前只有 Anthropic（Claude）API key**，OpenAI、Google 的 API key 尚未確認持有（未提及，視為尚未申請）。
+  - 每月基本預算 **US$30**，可依專案規模彈性提高上限（非硬性天花板）。
+- 影響：MVP 第一步可以先用「單一供應商（Claude API）打通整條路徑（登入→聊天→呼叫 API→存回資料庫）」，再擴增 OpenAI／Gemini，而不必一開始就三家 API 同時搞定，降低起始複雜度與需要同時申請/除錯三組金鑰的風險。
+- 待釐清：是否要現在協助申請 OpenAI／Google 的 API key 與計費設定，還是先用 Claude 打通 MVP 再說？→ 待後續釐清
+
 ## 待釐清事項
