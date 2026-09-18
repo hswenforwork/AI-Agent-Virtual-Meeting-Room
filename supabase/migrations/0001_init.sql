@@ -426,3 +426,11 @@ alter table public.usage_daily enable row level security;
 
 create policy "usage_daily_select_member" on public.usage_daily
   for select using (public.is_room_member(room_id));
+
+-- ---------------------------------------------------------------------------
+-- Realtime：前端 useMessages/useAgentRunStatus 靠 postgres_changes 訂閱這兩張表，
+-- 但 Supabase 預設不會把任何表加進 supabase_realtime publication，不加這段的話
+-- 新訊息／代理狀態變化只能等下次重新整理（重新 SELECT）才會出現。
+-- ---------------------------------------------------------------------------
+alter publication supabase_realtime add table public.messages;
+alter publication supabase_realtime add table public.agent_runs;
