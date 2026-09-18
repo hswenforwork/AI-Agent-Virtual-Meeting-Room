@@ -91,6 +91,16 @@ npx supabase@latest functions deploy file-register
 打開部署好的網址，註冊一個帳號即可。第一次登入會自動建立一間「我的協作室」，
 裡面已經有三個代理：`Claude`（啟用中）、`GPT`、`Gemini`（尚未啟用，等你申請好對應 API key 再串接）。
 
+**Email 登入的兩個小地雷：**
+
+1. Supabase 內建的寄信服務**每小時只能寄 2 封驗證信**，測試時很容易撞到「email rate limit exceeded」。
+   個人使用建議直接到 Supabase Dashboard 的 **Authentication → Sign In / Providers → Email**，
+   把 **Confirm email**（確認信箱）關掉，註冊後不用等驗證信就能直接登入。
+2. 也可以到 Supabase Dashboard 的 **Authentication → Providers** 打開 **Anonymous Sign-ins**，
+   這樣網頁上「以訪客身分繼續」這顆按鈕才能用——不用註冊、不會寄信，直接開始使用。
+   訪客資料留在該瀏覽器對應的帳號上，換裝置或清除瀏覽器資料後就無法再登入回同一個帳號；
+   要長期、跨裝置保存資料還是建議用 Email 註冊。
+
 ---
 
 ## 之後要開發／修改程式怎麼辦？
