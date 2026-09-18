@@ -27,11 +27,9 @@ export function useCreateRoom() {
   return useMutation({
     mutationFn: async (name: string) => {
       if (!user) throw new Error("尚未登入");
-      const { data, error } = await supabase
-        .from("rooms")
-        .insert({ owner_id: user.id, name })
-        .select("*")
-        .single();
+      // owner_id 不從前端傳入，交給資料庫欄位預設值 auth.uid() 帶入，
+      // 避免前端持有的 user.id 跟伺服器端評估當下的 auth.uid() 有落差時被 RLS 擋下。
+      const { data, error } = await supabase.from("rooms").insert({ name }).select("*").single();
       if (error) throw error;
       return data as RoomRow;
     },
