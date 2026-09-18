@@ -113,38 +113,3 @@ export interface UsageDailyRow {
   output_tokens: number;
   errors: number;
 }
-
-// 最小化的 Database 型別，只標註本專案用到的資料表／欄位形狀，滿足 supabase-js 的泛型即可。
-export interface Database {
-  public: {
-    Tables: {
-      profiles: { Row: ProfileRow; Insert: Partial<ProfileRow>; Update: Partial<ProfileRow> };
-      rooms: { Row: RoomRow; Insert: Partial<RoomRow>; Update: Partial<RoomRow> };
-      room_members: {
-        Row: { room_id: string; user_id: string; role: "owner" | "member"; joined_at: string };
-        Insert: { room_id: string; user_id: string; role?: "owner" | "member" };
-        Update: Partial<{ role: "owner" | "member" }>;
-      };
-      agents: { Row: AgentRow; Insert: Partial<AgentRow>; Update: Partial<AgentRow> };
-      messages: { Row: MessageRow; Insert: Partial<MessageRow>; Update: Partial<MessageRow> };
-      message_mentions: {
-        Row: { id: string; message_id: string; agent_id: string; created_at: string };
-        Insert: { message_id: string; agent_id: string };
-        Update: never;
-      };
-      notes: { Row: NoteRow; Insert: Partial<NoteRow>; Update: Partial<NoteRow> };
-      tasks: { Row: TaskRow; Insert: Partial<TaskRow>; Update: Partial<TaskRow> };
-      files: { Row: FileRow; Insert: Partial<FileRow>; Update: Partial<FileRow> };
-      approval_requests: {
-        Row: ApprovalRequestRow;
-        Insert: Partial<ApprovalRequestRow>;
-        Update: Partial<ApprovalRequestRow>;
-      };
-      usage_daily: {
-        Row: UsageDailyRow;
-        Insert: Partial<UsageDailyRow>;
-        Update: Partial<UsageDailyRow>;
-      };
-    };
-  };
-}

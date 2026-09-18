@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
       .eq("message_id", messageId);
 
     let targetAgentIds = (mentions ?? []).map((m) => m.agent_id);
-    let notices: string[] = [];
+    const notices: string[] = [];
 
     if (targetAgentIds.length === 0) {
       const { data: supervisor } = await admin
