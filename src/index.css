@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+.markdown-body p {
+  margin: 0.25rem 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+.markdown-body pre {
+  @apply my-2 overflow-x-auto rounded-md bg-slate-100 p-2 text-xs;
+}
+.markdown-body code {
+  @apply rounded bg-slate-100 px-1 py-0.5 text-xs;
+}
