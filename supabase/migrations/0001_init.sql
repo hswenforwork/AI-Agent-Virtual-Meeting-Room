@@ -27,8 +27,13 @@ language plpgsql
 security definer set search_path = public
 as $$
 begin
+  -- 訪客（匿名）登入沒有 email，split_part(NULL, ...) 會是 NULL；
+  -- display_name 欄位是 not null，所以要補最後一層 '訪客' 保底，避免整個 insert 失敗。
   insert into public.profiles (id, display_name)
-  values (new.id, coalesce(new.raw_user_meta_data ->> 'display_name', split_part(new.email, '@', 1)));
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'display_name', split_part(new.email, '@', 1), '訪客')
+  );
   return new;
 end;
 $$;
