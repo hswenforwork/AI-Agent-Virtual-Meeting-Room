@@ -78,8 +78,12 @@ as $$
   );
 $$;
 
+-- owner_id = auth.uid() 是必要的：INSERT ... RETURNING 會立刻用 SELECT 政策檢查剛寫入的那筆，
+-- 但把建立者加進 room_members 的 handle_new_room() 觸發器這時候還沒跑完，
+-- 只靠 is_room_member() 會讓「建立房間」這個動作本身失敗
+-- （PostgreSQL 官方文件：RETURNING 的新資料列不滿足 SELECT 政策時會直接報錯，不會靜默略過）。
 create policy "rooms_select_member" on public.rooms
-  for select using (public.is_room_member(id));
+  for select using (owner_id = auth.uid() or public.is_room_member(id));
 
 create policy "rooms_insert_own" on public.rooms
   for insert with check (owner_id = auth.uid());
