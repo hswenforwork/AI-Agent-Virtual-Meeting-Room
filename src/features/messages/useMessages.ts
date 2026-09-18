@@ -10,14 +10,16 @@ export function useMessages(roomId: string) {
   const query = useQuery({
     queryKey: ["messages", roomId],
     queryFn: async (): Promise<MessageRow[]> => {
+      // 抓「最新 200 則」再反轉成舊到新顯示；原本用 ascending+limit 抓到的是「最早 200 則」，
+      // 房間訊息一旦超過 200 則，畫面就永遠卡在最舊的那一批，看不到新對話。
       const { data, error } = await supabase
         .from("messages")
         .select("*")
         .eq("room_id", roomId)
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: false })
         .limit(200);
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []).reverse();
     },
   });
 
