@@ -46,19 +46,32 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 平台會自動注入給每個 Edge Function，**不能也不需要**手動設定（手動加會直接被擋下，
 錯誤訊息是「Name must not start with the SUPABASE_ prefix」）。
 
-### 步驟 3：部署 Edge Functions
+### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
-如果你有終端機環境（例如短暫開一個 Codespace），用 [Supabase CLI](https://supabase.com/docs/guides/cli) 執行：
+`.github/workflows/deploy-functions.yml` 已經設定好，只要 repo 有兩個 Secrets，push 到 `main`
+（或改到 `supabase/functions/` 底下的檔案）就會自動部署四個函式，**不需要 Codespaces、不需要終端機**：
+
+1. 到 [Supabase Dashboard → 帳號設定 → Access Tokens](https://supabase.com/dashboard/account/tokens)
+   建立一個 **Personal Access Token**，複製起來。
+2. 到 repo 的 **Settings → Secrets and variables → Actions → Secrets**（注意是 **Secrets** 分頁，
+   不是前面設定 `VITE_SUPABASE_URL` 用的 Variables 分頁），新增：
+   - `SUPABASE_ACCESS_TOKEN` = 剛剛複製的 Personal Access Token
+   - `SUPABASE_PROJECT_REF` = 你的專案 ref（Supabase Dashboard 網址裡 `project/` 後面那串）
+3. 這兩個設定好之後，到 repo 的 **Actions** 分頁，手動觸發一次 **deploy-functions** 這個 workflow
+   （點進去右側會有 **Run workflow** 按鈕），或者 push 一次程式碼，之後就會自動部署。
+
+**如果你已經有終端機環境**（例如 Codespaces 網路正常時），也可以用 [Supabase CLI](https://supabase.com/docs/guides/cli) 手動執行：
 
 ```bash
-supabase link --project-ref <你的專案 ref>
-supabase functions deploy chat-dispatch
-supabase functions deploy agent-run
-supabase functions deploy approval-decide
-supabase functions deploy file-register
+npx supabase@latest link --project-ref <你的專案 ref>
+npx supabase@latest functions deploy chat-dispatch
+npx supabase@latest functions deploy agent-run
+npx supabase@latest functions deploy approval-decide
+npx supabase@latest functions deploy file-register
 ```
 
-沒有終端機環境時，也可以在 Supabase Dashboard 的 Edge Functions 頁面手動貼上 `supabase/functions/<name>/index.ts` 的內容建立函式（`_shared/` 底下的檔案要一起帶進去，或改用 Dashboard 的「共用模組」功能）。
+（Codespaces 有時候會遇到 DNS 暫時連不出去的狀況，導致 `failed to bundle function`；
+遇到這種狀況改用上面的 GitHub Actions 方式最省事。）
 
 ### 步驟 4：建立 Storage bucket 權限（已包含在 migration 裡）
 
