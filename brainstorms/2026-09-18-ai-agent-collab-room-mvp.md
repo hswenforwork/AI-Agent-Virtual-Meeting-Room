@@ -20,4 +20,15 @@
 - 已記錄：使用者選 **(a) 多供應商優先**。核心是「同一問題能分別問不同供應商（GPT/Claude/Gemini/其他），拿到不同視角」；角色分工（主管/研究/程式/測試）是次要，MVP 可以先不做。
 - 影響：這代表文件第 10.4 節的 Provider Adapter（原規劃為「第一版不用，未來再加」）需要提前成為 MVP 第一階段的核心，而非角色路由。點名機制（`@研究代理`）也可能要改成或並存「`@GPT` `@Claude` `@Gemini`」這種以供應商為單位的點名。
 
+### Q3：目前手動比較的供應商是哪些？付費型態是網頁版還是 API？零成本是否為硬限制？
+- 問題：確認 (a) 目前手動比較用的供應商 (b) 是付費網頁版還是有 API key (c) 若多供應商需要花錢用 API，能否接受，還是零成本是硬限制
+- 已記錄：使用者原話——「目前有ChatGPT、Claude、Gemini付費訂閱網頁版，未來多供應商必須要花一點錢才能用 API我可以接受」。
+  - 目前是 **ChatGPT、Claude、Gemini 三家的付費訂閱網頁版**，尚未確認是否已有對應的 API key。
+  - **「零成本」不再是硬限制**：使用者明確接受未來為了多供應商 API 而花錢。
+- 影響：
+  1. 文件原本圍繞「零成本」（GitHub Pages + Supabase Free + Gemini 免費層）打造的整份規劃的前提假設已經鬆動，需要重新評估技術棧與模型選擇，不能只鎖 Gemini Flash-Lite 免費層。
+  2. 付費網頁訂閱（ChatGPT Plus / Claude Pro / Gemini 訂閱）**不等於 API 存取權**——OpenAI、Anthropic、Google 的 API 是各自獨立計費（依 token 用量），需要另外到 OpenAI Platform / Anthropic Console / Google AI Studio 申請 API key 並綁定付款方式，這件事使用者可能還沒做。
+  3. 需要進一步問清楚「一點錢」的預算範圍，才能決定要接入哪些模型（例如是否用便宜的 mini/flash 模型，還是也要接旗艦模型）。
+- 待釐清：使用者是否已經有 OpenAI／Anthropic／Google 的 API key？若沒有，是否需要協助申請流程？→ 待下一題釐清
+
 ## 待釐清事項
