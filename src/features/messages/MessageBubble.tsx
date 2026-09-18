@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { format } from "date-fns";
 import type { AgentRow, MessageRow } from "../../types/database";
+import { TaskCardMessage } from "./TaskCardMessage";
 
 export function MessageBubble({
   message,
@@ -16,6 +17,10 @@ export function MessageBubble({
         {message.content}
       </div>
     );
+  }
+
+  if (message.kind === "task_card") {
+    return <TaskCardMessage message={message} agentsById={agentsById} />;
   }
 
   const isUser = message.sender_type === "user";

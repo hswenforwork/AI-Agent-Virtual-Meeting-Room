@@ -6,11 +6,52 @@ import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { friendlyAnthropicError, jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin } from "../_shared/supabaseAdmin.ts";
 import { createAnthropicProvider, ProviderHttpError } from "../_shared/providers/anthropic.ts";
-import type { ChatMessage } from "../_shared/providers/types.ts";
+import type { AIProvider, ChatMessage } from "../_shared/providers/types.ts";
 
 const RECENT_MESSAGE_LIMIT = 24;
 const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
+const CLASSIFY_MAX_OUTPUT_TOKENS = 200;
 const DEFAULT_CLAUDE_MODEL = Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5";
+
+const CLASSIFY_SYSTEM_PROMPT = `你負責判斷使用者最新這則訊息，對「工作型代理」來說是「任務」還是「單純問題」。
+- 「任務」：需要實際動手做事才能完成——寫程式、修 bug、跑測試、產生檔案、部署、大規模搜尋整理資料等，做完會有具體產出或變更。
+- 「問題」：單純想知道答案、討論、閒聊、請教意見，不需要代理真的動手操作環境。
+只能回傳一行 JSON，不要有任何其他文字，格式固定為：
+{"type":"task","summary":"一句話描述這個任務要做什麼"} 或 {"type":"question"}`;
+
+interface ClassifyResult {
+  type: "task" | "question";
+  summary: string;
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+async function classifyTaskOrQuestion(
+  provider: AIProvider,
+  model: string,
+  history: ChatMessage[],
+): Promise<ClassifyResult> {
+  const zeroUsage = { inputTokens: 0, outputTokens: 0 };
+  if (history.length === 0) return { type: "question", summary: "", usage: zeroUsage };
+
+  try {
+    const result = await provider.generate({
+      systemPrompt: CLASSIFY_SYSTEM_PROMPT,
+      messages: history,
+      model,
+      maxOutputTokens: CLASSIFY_MAX_OUTPUT_TOKENS,
+    });
+    const match = result.text.match(/\{.*\}/s);
+    if (!match) return { type: "question", summary: "", usage: result.usage };
+    const parsed = JSON.parse(match[0]);
+    if (parsed?.type === "task" && typeof parsed.summary === "string" && parsed.summary.trim()) {
+      return { type: "task", summary: parsed.summary.trim(), usage: result.usage };
+    }
+    return { type: "question", summary: "", usage: result.usage };
+  } catch (err) {
+    console.error("任務分類失敗，視為一般問題", err);
+    return { type: "question", summary: "", usage: zeroUsage };
+  }
+}
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -97,11 +138,64 @@ Deno.serve(async (req) => {
 
     const provider = createAnthropicProvider(apiKey);
     const model = (agent.model_config as Record<string, unknown>)?.model as string | undefined;
+    const resolvedModel = model ?? DEFAULT_CLAUDE_MODEL;
+
+    // 任務 vs 問題判斷（brainstorms/2026-09-18-agentic-sandbox-workers.md Q6）：
+    // AI 自動判斷這則訊息是單純問題還是任務；是任務的話先出任務卡片問使用者要不要開始執行，
+    // 不直接生成一般聊天回覆。判斷失敗（解析不出 JSON）一律當作「問題」，維持原本聊天行為不中斷。
+    const classification = await classifyTaskOrQuestion(provider, resolvedModel, history);
+
+    if (classification.type === "task") {
+      const { data: taskCard, error: taskCardErr } = await admin
+        .from("messages")
+        .insert({
+          room_id: run.room_id,
+          sender_type: "agent",
+          sender_agent_id: agent.id,
+          kind: "task_card",
+          content: classification.summary,
+          status: "completed",
+          reply_to_id: run.trigger_message_id,
+          metadata: { status: "pending_confirmation", taskSummary: classification.summary },
+        })
+        .select("id")
+        .single();
+      if (taskCardErr || !taskCard) throw taskCardErr ?? new Error("建立任務卡片失敗");
+
+      const { data: workerTask, error: workerTaskErr } = await admin
+        .from("worker_tasks")
+        .insert({
+          room_id: run.room_id,
+          agent_id: agent.id,
+          origin_message_id: run.trigger_message_id,
+          task_card_message_id: taskCard.id,
+          task_summary: classification.summary,
+          status: "pending_confirmation",
+        })
+        .select("id")
+        .single();
+      if (workerTaskErr || !workerTask) throw workerTaskErr ?? new Error("建立 worker_task 失敗");
+
+      await admin
+        .from("messages")
+        .update({ metadata: { status: "pending_confirmation", taskSummary: classification.summary, workerTaskId: workerTask.id } })
+        .eq("id", taskCard.id);
+
+      await admin
+        .from("agent_runs")
+        .update({ status: "completed", usage_json: classification.usage, updated_at: new Date().toISOString() })
+        .eq("id", runId);
+
+      const today = new Date().toISOString().slice(0, 10);
+      await upsertUsage(admin, today, run.room_id, agent.id, classification.usage);
+
+      return new Response(JSON.stringify({ ok: true, kind: "task_card" }), { headers });
+    }
 
     const result = await provider.generate({
       systemPrompt,
       messages: history,
-      model: model ?? DEFAULT_CLAUDE_MODEL,
+      model: resolvedModel,
       maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     });
 
@@ -114,17 +208,22 @@ Deno.serve(async (req) => {
       reply_to_id: run.trigger_message_id,
     });
 
+    const combinedUsage = {
+      inputTokens: classification.usage.inputTokens + result.usage.inputTokens,
+      outputTokens: classification.usage.outputTokens + result.usage.outputTokens,
+    };
+
     await admin
       .from("agent_runs")
       .update({
         status: "completed",
-        usage_json: result.usage,
+        usage_json: combinedUsage,
         updated_at: new Date().toISOString(),
       })
       .eq("id", runId);
 
     const today = new Date().toISOString().slice(0, 10);
-    await upsertUsage(admin, today, run.room_id, agent.id, result.usage);
+    await upsertUsage(admin, today, run.room_id, agent.id, combinedUsage);
 
     return new Response(JSON.stringify({ ok: true }), { headers });
   } catch (err) {
