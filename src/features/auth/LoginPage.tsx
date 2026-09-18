@@ -12,6 +12,7 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
 
   if (user) return <Navigate to="/" replace />;
 
@@ -31,6 +32,18 @@ export function LoginPage() {
       toast.error(err instanceof Error ? err.message : "發生錯誤，請稍後再試");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleGuestLogin() {
+    setGuestLoading(true);
+    try {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "訪客登入失敗，請稍後再試");
+    } finally {
+      setGuestLoading(false);
     }
   }
 
@@ -78,6 +91,24 @@ export function LoginPage() {
         >
           {mode === "login" ? "還沒有帳號？註冊" : "已經有帳號？登入"}
         </button>
+
+        <div className="my-4 flex items-center gap-3 text-xs text-slate-400">
+          <div className="h-px flex-1 bg-slate-200" />
+          或
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <button
+          type="button"
+          onClick={handleGuestLogin}
+          disabled={guestLoading}
+          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {guestLoading ? "登入中…" : "以訪客身分繼續"}
+        </button>
+        <p className="mt-2 text-center text-xs text-slate-400">
+          訪客資料只留在這個瀏覽器，換裝置或清除資料後就找不回來；要長期保存請用 Email 註冊。
+        </p>
       </div>
     </div>
   );
