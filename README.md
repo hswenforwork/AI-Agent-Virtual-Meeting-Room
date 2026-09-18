@@ -27,24 +27,24 @@
 2. 進入專案的 **SQL Editor**，依序貼上並執行：
    - `supabase/migrations/0001_init.sql`
    - `supabase/migrations/0002_storage.sql`
-3. 到 **Project Settings → API**，記下：
+3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
-   - `service_role` key（**絕對不要**放進前端或 GitHub，只用在 Edge Function secrets）
 
 ### 步驟 2：設定 Edge Function secrets（後端密鑰）
 
-到 Supabase Dashboard 的 **Edge Functions → Manage secrets**（或用 Supabase CLI `supabase secrets set`），設定：
+到 Supabase Dashboard 的 **Edge Functions → Secrets**（或用 Supabase CLI `supabase secrets set`），設定：
 
 ```
 ANTHROPIC_API_KEY=你的 Anthropic API key（console.anthropic.com 申請）
-SUPABASE_SERVICE_ROLE_KEY=步驟 1 記下的 service_role key
 ALLOWED_ORIGINS=https://<你的 github 帳號>.github.io
 DEFAULT_CLAUDE_MODEL=claude-sonnet-5
 MAX_AGENT_RUNS_PER_MESSAGE=4
 ```
 
-`SUPABASE_URL` 與 `SUPABASE_ANON_KEY` 這兩個變數 Supabase 平台會自動注入給 Edge Function，不需要手動設定。
+`SUPABASE_URL`、`SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY` 這三個是 Supabase 保留字，
+平台會自動注入給每個 Edge Function，**不能也不需要**手動設定（手動加會直接被擋下，
+錯誤訊息是「Name must not start with the SUPABASE_ prefix」）。
 
 ### 步驟 3：部署 Edge Functions
 
