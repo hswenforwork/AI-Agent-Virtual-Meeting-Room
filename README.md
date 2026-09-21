@@ -27,6 +27,7 @@
 2. 進入專案的 **SQL Editor**，依序貼上並執行：
    - `supabase/migrations/0001_init.sql`
    - `supabase/migrations/0002_storage.sql`
+   - `supabase/migrations/0007_worker_tasks.sql`（工作型代理／任務卡片，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -45,6 +46,44 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 `SUPABASE_URL`、`SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY` 這三個是 Supabase 保留字，
 平台會自動注入給每個 Edge Function，**不能也不需要**手動設定（手動加會直接被擋下，
 錯誤訊息是「Name must not start with the SUPABASE_ prefix」）。
+
+### 附加設定：工作型代理（沙盒任務，選用）
+
+聊天室裡 `@Claude` 除了純聊天回答，也會自動判斷訊息是不是「任務」（寫程式、修 bug、產生檔案、部署等）；
+如果是任務，會先出一張「任務卡片」等你按「開始執行」，才會真的動手做（設計見
+[`brainstorms/2026-09-18-agentic-sandbox-workers.md`](brainstorms/2026-09-18-agentic-sandbox-workers.md)）。
+這部分底層是 Anthropic 的 **Managed Agents（CMA，目前是 beta）**，需要額外一次性設定：
+
+1. **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+   `supabase/migrations/0007_worker_tasks.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+2. 確認你的 `ANTHROPIC_API_KEY` 有 Managed Agents（CMA）beta 權限（跟平常聊天用的 Messages API 是同一把 key，
+   但 Managed Agents 目前是 beta 功能，需要帳號開通）。
+3. 在**你自己的電腦或 Codespaces**（不是 Edge Function 環境）執行一次設定腳本，建立可重複使用的
+   agent／environment 設定：
+   ```bash
+   export ANTHROPIC_API_KEY="你的 key"
+   ./scripts/setup-managed-agent.sh
+   ```
+   腳本執行完會印出 `agent_id` 跟 `environment_id`，照著印出的指令設定 Edge Function secrets：
+   ```
+   MANAGED_AGENTS_AGENT_ID=agent_xxx
+   MANAGED_AGENTS_ENVIRONMENT_ID=env_xxx
+   ```
+4. 如果要讓工作型代理修改**這個專案自己的 GitHub repo**（訪談 Q7：這個專案優先），再加兩個 secrets：
+   ```
+   GITHUB_REPO_URL=https://github.com/<owner>/<repo>
+   GITHUB_TOKEN=一個有這個 repo 存取權的 GitHub Personal Access Token
+   GITHUB_REPO_BRANCH=要 checkout 的分支（選用，不填用預設分支）
+   ```
+5. 卡住時要能自動詢問 Gemini（訪談 Q1/Q2），再加：
+   ```
+   GEMINI_API_KEY=你的 Gemini 免費 API key（aistudio.google.com 申請）
+   ```
+   沒設定這個也不影響一般聊天／任務執行，只是代理卡住時求助不到人，會照自己的判斷繼續嘗試。
+
+> ⚠️ 這個功能會讓代理在一個 Anthropic 代管的沙盒容器裡自主執行 bash／寫檔案等操作（`always_allow` 權限，
+> 不會逐步跳出來要你按確認），沒有硬性花費上限（訪談 Q5 決議先不設，用真實用量再校正）。
+> 部署前請自行評估你能接受的風險與花費範圍。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
@@ -131,3 +170,5 @@ npm run build      # 建置到 dist/
 - 檔案文字擷取目前只支援純文字類型（txt/md/csv）；PDF／DOCX／XLSX 會先存檔案但不會擷取內容。
 - 沒有相簿、行事曆（依訪談結論延後到之後版本）。
 - 沒有角色分工代理（研究/程式/測試），MVP 核心是多供應商比較，不是角色協作。
+- 「工作型代理」（任務卡片、沙盒執行）是第一版：只支援單一 session 跑到底、單一任務不會被拆成多個回合對話；
+  Managed Agents 目前是 Anthropic beta 功能，介面與行為未來可能調整。

@@ -43,6 +43,18 @@ export interface AgentRow {
   created_at: string;
 }
 
+export type MessageKind = "chat" | "task_card";
+export type WorkerTaskStatus = "pending_confirmation" | "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface TaskCardMetadata {
+  status?: WorkerTaskStatus;
+  taskSummary?: string;
+  workerTaskId?: string;
+  sessionId?: string;
+  progressLog?: string[];
+  outputs?: { name: string; fileId: string }[];
+}
+
 export interface MessageRow {
   id: string;
   room_id: string;
@@ -53,6 +65,8 @@ export interface MessageRow {
   status: MessageStatus;
   reply_to_id: string | null;
   client_id: string | null;
+  kind: MessageKind;
+  metadata: TaskCardMetadata;
   created_at: string;
 }
 
