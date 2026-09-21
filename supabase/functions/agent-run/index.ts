@@ -146,6 +146,23 @@ Deno.serve(async (req) => {
     const classification = await classifyTaskOrQuestion(provider, resolvedModel, history);
 
     if (classification.type === "task") {
+      // 先建立 worker_tasks 拿到 id，task_card 訊息一次到位就帶上 workerTaskId，
+      // 不要「先 insert 訊息、再 update 補 workerTaskId」——前端 Realtime 訂閱的是同一張訊息，
+      // 這個 id 補上的動作如果晚於前端第一次收到 INSERT，使用者看到的卡片就會缺 workerTaskId，
+      // 「開始執行」按鈕會因為讀不到 workerTaskId 而點了沒反應。
+      const { data: workerTask, error: workerTaskErr } = await admin
+        .from("worker_tasks")
+        .insert({
+          room_id: run.room_id,
+          agent_id: agent.id,
+          origin_message_id: run.trigger_message_id,
+          task_summary: classification.summary,
+          status: "pending_confirmation",
+        })
+        .select("id")
+        .single();
+      if (workerTaskErr || !workerTask) throw workerTaskErr ?? new Error("建立 worker_task 失敗");
+
       const { data: taskCard, error: taskCardErr } = await admin
         .from("messages")
         .insert({
@@ -156,30 +173,13 @@ Deno.serve(async (req) => {
           content: classification.summary,
           status: "completed",
           reply_to_id: run.trigger_message_id,
-          metadata: { status: "pending_confirmation", taskSummary: classification.summary },
+          metadata: { status: "pending_confirmation", taskSummary: classification.summary, workerTaskId: workerTask.id },
         })
         .select("id")
         .single();
       if (taskCardErr || !taskCard) throw taskCardErr ?? new Error("建立任務卡片失敗");
 
-      const { data: workerTask, error: workerTaskErr } = await admin
-        .from("worker_tasks")
-        .insert({
-          room_id: run.room_id,
-          agent_id: agent.id,
-          origin_message_id: run.trigger_message_id,
-          task_card_message_id: taskCard.id,
-          task_summary: classification.summary,
-          status: "pending_confirmation",
-        })
-        .select("id")
-        .single();
-      if (workerTaskErr || !workerTask) throw workerTaskErr ?? new Error("建立 worker_task 失敗");
-
-      await admin
-        .from("messages")
-        .update({ metadata: { status: "pending_confirmation", taskSummary: classification.summary, workerTaskId: workerTask.id } })
-        .eq("id", taskCard.id);
+      await admin.from("worker_tasks").update({ task_card_message_id: taskCard.id }).eq("id", workerTask.id);
 
       await admin
         .from("agent_runs")
