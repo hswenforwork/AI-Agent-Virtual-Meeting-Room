@@ -183,8 +183,6 @@ async function runSessionToCompletion(
 
   try {
     for await (const event of streamSessionEvents(apiKey, ctx.sessionId)) {
-      if (finished) break;
-
       switch (event.type) {
         case "agent.message": {
           const text = extractText(event.content);
@@ -214,6 +212,13 @@ async function runSessionToCompletion(
           break;
         }
       }
+
+      // 一旦收到終態事件就要立刻結束，不能只在下一輪迴圈開頭才檢查——
+      // session 一進 idle 通常就不會再有下一個 data: 事件了（只剩 SSE 心跳，
+      // streamSessionEvents 不會為心跳 yield 任何東西），繼續留在 for-await 裡
+      // 只會卡在等下一個永遠不會來的事件，finalizeTask 就永遠不會被呼叫，
+      // 任務卡片會一直停在「執行中」。
+      if (finished) break;
     }
   } catch (err) {
     console.error("讀取 Managed Agents 事件串流失敗", ctx.sessionId, err);
