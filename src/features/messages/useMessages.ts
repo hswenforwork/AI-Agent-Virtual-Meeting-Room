@@ -37,6 +37,21 @@ export function useMessages(roomId: string) {
           });
         },
       )
+      .on(
+        // 任務卡片（worker-task-start）靠 UPDATE 這張訊息本身來推送狀態／進度變化，
+        // 只訂閱 INSERT 的話，卡片建立後的所有後續更新（包含 workerTaskId 補上、執行中進度、
+        // 完成/失敗結果）都不會顯示，「開始執行」按鈕也會因為讀不到 workerTaskId 而點了沒反應。
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages", filter: `room_id=eq.${roomId}` },
+        (payload) => {
+          queryClient.setQueryData<MessageRow[]>(["messages", roomId], (prev) => {
+            const next = prev ?? [];
+            const updated = payload.new as MessageRow;
+            if (!next.some((m) => m.id === updated.id)) return next;
+            return next.map((m) => (m.id === updated.id ? updated : m));
+          });
+        },
+      )
       .subscribe();
 
     return () => {
