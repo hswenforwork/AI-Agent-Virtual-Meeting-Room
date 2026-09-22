@@ -64,13 +64,13 @@ export interface CreateAgentResult {
   id: string;
 }
 
-export async function createManagedAgent(apiKey: string): Promise<CreateAgentResult> {
+export async function createManagedAgent(apiKey: string, model: string): Promise<CreateAgentResult> {
   const res = await cmaFetch(apiKey, "/agents", {
     method: "POST",
     headers: cmaHeaders(apiKey),
     body: JSON.stringify({
       name: "AI 協作室工作型代理",
-      model: "claude-opus-5",
+      model,
       system:
         "你是「AI 協作室」聊天室裡的工作型代理，負責實際動手完成使用者交辦的任務（寫程式、修 bug、整理/產生檔案、部署等）。完成後把最終產出的檔案寫到 /mnt/session/outputs/。若同一個問題已經嘗試修正 3 次以上仍然卡住，呼叫 consult_other_ai 工具求助另一位 AI，不需要等待使用者回應。全部完成後，最後一則訊息用「SUMMARY: 」開頭簡短總結成果。",
       tools: [
@@ -97,6 +97,18 @@ export async function createManagedAgent(apiKey: string): Promise<CreateAgentRes
     }),
   });
   return await res.json();
+}
+
+// 更新既有 agent 的 model（對應 brainstorms/2026-09-22-provider-model-selection.md Q8/Q9：
+// 使用者在「設定」頁改了偏好的 Claude 模型，順便同步這個使用者已經建好的 Managed Agent）。
+// 官方文件：更新是 POST /v1/agents/{agent_id}（不是 PATCH/PUT），只送要改的欄位就好，
+// 每次更新會建立一個新的版本（agent 本身是有版本歷史的物件），已經釘住舊版本的 session 不受影響。
+export async function updateManagedAgentModel(apiKey: string, agentId: string, model: string): Promise<void> {
+  await cmaFetch(apiKey, `/agents/${agentId}`, {
+    method: "POST",
+    headers: cmaHeaders(apiKey),
+    body: JSON.stringify({ model }),
+  });
 }
 
 export interface CreateSessionOptions {

@@ -19,15 +19,16 @@ jobs:
           version: latest
 
       - name: 部署 Edge Functions
+        # 掃描 supabase/functions/ 底下的每個資料夾（排除 _shared），不再明確列出函式名稱——
+        # 之前發生過新增 Edge Function（save-api-key／delete-api-key）忘記加進這份清單，
+        # 導致函式從來沒被部署過的問題，改成自動掃描就不會再漏。
         run: |
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
-          supabase functions deploy chat-dispatch
-          supabase functions deploy agent-run
-          supabase functions deploy approval-decide
-          supabase functions deploy file-register
-          supabase functions deploy worker-task-start
-          supabase functions deploy save-api-key
-          supabase functions deploy delete-api-key
+          for dir in supabase/functions/*/; do
+            name=$(basename "$dir")
+            if [ "$name" = "_shared" ]; then continue; fi
+            supabase functions deploy "$name"
+          done
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}

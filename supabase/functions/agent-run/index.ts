@@ -8,9 +8,7 @@
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { friendlyProviderError, jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin } from "../_shared/supabaseAdmin.ts";
-import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
-import { createOpenAIProvider } from "../_shared/providers/openai.ts";
-import { createGoogleProvider } from "../_shared/providers/google.ts";
+import { createProviderAdapter } from "../_shared/providers/index.ts";
 import { ProviderHttpError, type AIProvider, type ChatMessage } from "../_shared/providers/types.ts";
 import { getUserProviderKey, type ProviderSlug } from "../_shared/vault.ts";
 
@@ -22,17 +20,6 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
   openai: Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1",
   google: Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash",
 };
-
-function createProvider(providerSlug: ProviderSlug, apiKey: string): AIProvider {
-  switch (providerSlug) {
-    case "anthropic":
-      return createAnthropicProvider(apiKey);
-    case "openai":
-      return createOpenAIProvider(apiKey);
-    case "google":
-      return createGoogleProvider(apiKey);
-  }
-}
 
 const CLASSIFY_SYSTEM_PROMPT = `你負責判斷使用者最新這則訊息，對「工作型代理」來說是「任務」還是「單純問題」。
 - 「任務」：需要實際動手做事才能完成——寫程式、修 bug、跑測試、產生檔案、部署、大規模搜尋整理資料等，做完會有具體產出或變更。
@@ -169,9 +156,19 @@ Deno.serve(async (req) => {
       : agent.system_prompt;
 
     const providerSlug = agent.provider as ProviderSlug;
-    const provider = createProvider(providerSlug, apiKey);
-    const model = (agent.model_config as Record<string, unknown>)?.model as string | undefined;
-    const resolvedModel = model ?? DEFAULT_MODEL_BY_PROVIDER[providerSlug];
+    const provider = createProviderAdapter(providerSlug, apiKey);
+
+    // 模型解析順序（brainstorms/2026-09-22-provider-model-selection.md）：房間覆蓋
+    // （agents.model_config，目前還沒有 UI 寫入，一律是空的）→ 觸發訊息發送者在
+    // 「設定」頁選的模型 → 寫死的環境變數兜底。
+    const roomModel = (agent.model_config as Record<string, unknown>)?.model as string | undefined;
+    const { data: keyRow } = await admin
+      .from("user_provider_keys")
+      .select("selected_model")
+      .eq("user_id", triggeringUserId)
+      .eq("provider", providerSlug)
+      .maybeSingle();
+    const resolvedModel = roomModel ?? keyRow?.selected_model ?? DEFAULT_MODEL_BY_PROVIDER[providerSlug];
 
     // 任務 vs 問題判斷（brainstorms/2026-09-18-agentic-sandbox-workers.md Q6）：
     // AI 自動判斷這則訊息是單純問題還是任務；是任務的話先出任務卡片問使用者要不要開始執行，
