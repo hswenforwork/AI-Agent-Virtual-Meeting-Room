@@ -42,3 +42,8 @@
 - 問題：(a) 只給還沒完成的（todo + in_progress）（建議） (b) 全部都給，包含已完成的
 - 已記錄：使用者選 **(a) 只給還沒完成的（todo + in_progress）**。
 - 影響：`tasks` 查詢加 `where status in ('todo', 'in_progress')`，`done` 的不進 context，避免房間累積很多已完成事項時把 context 灌爆。
+
+### Q6：拖拉調寬／收合這套行為適用範圍？
+- 問題：(a) 只做桌面版（`md` 斷點以上），手機版維持現狀（建議） (b) 桌面版、手機版都要有類似的可調整/收合體驗
+- 已記錄：使用者選 **(a) 只做桌面版，手機版維持現狀**。
+- 影響：只改 `AppLayout.tsx` 裡 `md:flex` 那段常駐 `<aside>`（左）跟 `RoomPage.tsx` 裡桌面版固定寬度的右側工作區容器；手機版的滑出式抽屜（`RoomSidebar` + `openDrawer`）跟上方「聊天／工作區」切換按鈕完全不動，不用重新設計手機互動。
