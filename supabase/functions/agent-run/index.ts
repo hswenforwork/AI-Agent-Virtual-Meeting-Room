@@ -16,6 +16,8 @@ import { buildWorkspaceContext } from "../_shared/workspaceContext.ts";
 const RECENT_MESSAGE_LIMIT = 24;
 const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
 const CLASSIFY_MAX_OUTPUT_TOKENS = 200;
+// brainstorms/2026-09-22-streaming-replies.md Q3：每 200ms 節流一次 UPDATE，避免逐字都寫 DB
+const STREAM_UPDATE_INTERVAL_MS = 200;
 const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
   anthropic: Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5",
   openai: Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1",
@@ -228,25 +230,84 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: true, kind: "task_card" }), { headers });
     }
 
-    const result = await provider.generate({
-      systemPrompt,
-      messages: history,
-      model: resolvedModel,
-      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-    });
+    // 串流輸出（brainstorms/2026-09-22-streaming-replies.md）：先插入一則空白的
+    // status="streaming" 訊息，前端 Realtime 訂閱（已同時聽 INSERT/UPDATE）會先看到這則
+    // 訊息卡片出現，再隨著下面的節流 UPDATE 逐段看到內容補上。
+    const { data: streamingMessage, error: streamingMsgErr } = await admin
+      .from("messages")
+      .insert({
+        room_id: run.room_id,
+        sender_type: "agent",
+        sender_agent_id: agent.id,
+        content: "",
+        status: "streaming",
+        reply_to_id: run.trigger_message_id,
+      })
+      .select("id")
+      .single();
+    if (streamingMsgErr || !streamingMessage) throw streamingMsgErr ?? new Error("建立串流訊息失敗");
 
-    await admin.from("messages").insert({
-      room_id: run.room_id,
-      sender_type: "agent",
-      sender_agent_id: agent.id,
-      content: result.text || "（沒有回應內容）",
-      status: "completed",
-      reply_to_id: run.trigger_message_id,
-    });
+    let accumulatedText = "";
+    let lastUpdateAt = 0;
+    let updateInFlight: Promise<unknown> | null = null;
+
+    const flushUpdate = () => {
+      lastUpdateAt = Date.now();
+      const promise = admin
+        .from("messages")
+        .update({ content: accumulatedText })
+        .eq("id", streamingMessage.id)
+        .then(() => {});
+      updateInFlight = promise.finally(() => {
+        updateInFlight = null;
+      });
+    };
+
+    const onDelta = (textDelta: string) => {
+      accumulatedText += textDelta;
+      // onDelta 是同步呼叫（readSseStream 逐段解析時呼叫，中間沒有 await），這裡檢查完
+      // updateInFlight 到設值之間不會被其他呼叫插進來，不需要額外的鎖。
+      if (!updateInFlight && Date.now() - lastUpdateAt >= STREAM_UPDATE_INTERVAL_MS) {
+        flushUpdate();
+      }
+    };
+
+    let streamUsage: Awaited<ReturnType<typeof provider.generateStream>>;
+    try {
+      streamUsage = await provider.generateStream(
+        { systemPrompt, messages: history, model: resolvedModel, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+        onDelta,
+      );
+    } catch (streamErr) {
+      if (updateInFlight) await updateInFlight.catch(() => {});
+      const interruptedText = accumulatedText
+        ? `${accumulatedText}\n\n（回覆中斷，請稍後重試或重新發問）`
+        : "（回覆中斷，請稍後重試或重新發問）";
+      await admin.from("messages").update({ content: interruptedText, status: "failed" }).eq("id", streamingMessage.id);
+
+      const friendly =
+        streamErr instanceof ProviderHttpError
+          ? friendlyProviderError(streamErr.status)
+          : { code: "internal_error", message: "系統暫時發生錯誤，請稍後重試" };
+      const runStatus = streamErr instanceof ProviderHttpError && streamErr.status === 429 ? "rate_limited" : "failed";
+      await admin
+        .from("agent_runs")
+        .update({ status: runStatus, error_code: friendly.code, updated_at: new Date().toISOString() })
+        .eq("id", runId);
+
+      return new Response(JSON.stringify({ ok: false, error: friendly }), { headers, status: 200 });
+    }
+
+    // 保證最後一段內容一定會寫進去，不管節流有沒有卡到最後一段
+    if (updateInFlight) await updateInFlight.catch(() => {});
+    await admin
+      .from("messages")
+      .update({ content: accumulatedText || "（沒有回應內容）", status: "completed" })
+      .eq("id", streamingMessage.id);
 
     const combinedUsage = {
-      inputTokens: classification.usage.inputTokens + result.usage.inputTokens,
-      outputTokens: classification.usage.outputTokens + result.usage.outputTokens,
+      inputTokens: classification.usage.inputTokens + streamUsage.usage.inputTokens,
+      outputTokens: classification.usage.outputTokens + streamUsage.usage.outputTokens,
     };
 
     await admin
