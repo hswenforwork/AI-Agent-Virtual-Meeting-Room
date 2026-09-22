@@ -39,9 +39,17 @@ export interface ModelOption {
   label: string;
 }
 
+export interface StreamUsage {
+  usage: { inputTokens: number; outputTokens: number };
+}
+
 export interface AIProvider {
   generate(request: GenerateRequest): Promise<GenerateResult>;
   // 對應 brainstorms/2026-09-22-provider-model-selection.md：即時呼叫供應商自己的
   // 模型清單 API，不維護一份會過期的精選清單（今天才踩到 gemini-2.5-flash 過期的教訓）。
   listModels(): Promise<ModelOption[]>;
+  // 對應 brainstorms/2026-09-22-streaming-replies.md：串流版本的 generate()，每收到一段
+  // 文字就呼叫 onDelta，全部結束後 resolve 最終用量（三家供應商的用量資訊都只在串流的
+  // 最後才會拿到完整數字，過程中不用逐段累計）。
+  generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage>;
 }

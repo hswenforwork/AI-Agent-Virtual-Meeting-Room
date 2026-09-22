@@ -37,6 +37,9 @@ export function MessageBubble({
         {!isUser && <div className="mb-1 text-xs font-semibold text-slate-500">{label}</div>}
         <div className="markdown-body">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          {message.status === "streaming" && (
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-slate-400 align-text-bottom" />
+          )}
         </div>
         <div className={`mt-1 text-[10px] ${isUser ? "text-slate-300" : "text-slate-400"}`}>
           {format(new Date(message.created_at), "HH:mm")}

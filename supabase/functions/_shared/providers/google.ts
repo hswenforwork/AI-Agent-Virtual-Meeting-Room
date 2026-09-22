@@ -1,4 +1,12 @@
-import { ProviderHttpError, type AIProvider, type GenerateRequest, type GenerateResult, type ModelOption } from "./types.ts";
+import {
+  ProviderHttpError,
+  type AIProvider,
+  type GenerateRequest,
+  type GenerateResult,
+  type ModelOption,
+  type StreamUsage,
+} from "./types.ts";
+import { readSseStream } from "../sse.ts";
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -76,6 +84,57 @@ export function createGoogleProvider(apiKey: string): AIProvider {
           outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
         },
       };
+    },
+    async generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage> {
+      const res = await fetch(
+        `${GEMINI_API_BASE}/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: request.systemPrompt }] },
+            contents: request.messages.map((m) => ({
+              role: m.role === "assistant" ? "model" : "user",
+              parts: [{ text: m.content }],
+            })),
+            generationConfig: { maxOutputTokens: request.maxOutputTokens },
+          }),
+        },
+      );
+
+      if (!res.ok || !res.body) {
+        const body = await res.text().catch(() => "");
+        console.error("Gemini streaming API error", res.status, body);
+        throw new ProviderHttpError(res.status, body);
+      }
+
+      let inputTokens = 0;
+      let outputTokens = 0;
+
+      await readSseStream(res.body, (raw) => {
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          return;
+        }
+
+        const candidates = data.candidates as { content?: { parts?: { text?: string }[] } }[] | undefined;
+        const parts = candidates?.[0]?.content?.parts ?? [];
+        const text = parts.map((p) => p.text ?? "").join("");
+        if (text) onDelta(text);
+
+        // usageMetadata 每一包都會帶，但數字是累計值（不是逐段增量），取最後一次收到的就好
+        const usageMetadata = data.usageMetadata as
+          | { promptTokenCount?: number; candidatesTokenCount?: number }
+          | undefined;
+        if (usageMetadata) {
+          inputTokens = usageMetadata.promptTokenCount ?? inputTokens;
+          outputTokens = usageMetadata.candidatesTokenCount ?? outputTokens;
+        }
+      });
+
+      return { usage: { inputTokens, outputTokens } };
     },
   };
 }
