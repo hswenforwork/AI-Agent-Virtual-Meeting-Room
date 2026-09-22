@@ -6,28 +6,18 @@
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { friendlyProviderError, jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin, supabaseAsUser } from "../_shared/supabaseAdmin.ts";
-import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
-import { createOpenAIProvider } from "../_shared/providers/openai.ts";
-import { createGoogleProvider } from "../_shared/providers/google.ts";
-import { ProviderHttpError, type AIProvider } from "../_shared/providers/types.ts";
+import { createProviderAdapter } from "../_shared/providers/index.ts";
+import { ProviderHttpError } from "../_shared/providers/types.ts";
+import { refreshCachedModels } from "../_shared/modelCache.ts";
+import type { ProviderSlug } from "../_shared/vault.ts";
 
-const DEFAULT_CLAUDE_MODEL = Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5";
-const DEFAULT_GPT_MODEL = Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1";
-const DEFAULT_GEMINI_MODEL = Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash";
+const TEST_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
+  anthropic: Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5",
+  openai: Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1",
+  google: Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash",
+};
 
 const PROVIDERS = ["anthropic", "openai", "google"] as const;
-type Provider = (typeof PROVIDERS)[number];
-
-function providerFor(provider: Provider, apiKey: string): { adapter: AIProvider; model: string } {
-  switch (provider) {
-    case "anthropic":
-      return { adapter: createAnthropicProvider(apiKey), model: DEFAULT_CLAUDE_MODEL };
-    case "openai":
-      return { adapter: createOpenAIProvider(apiKey), model: DEFAULT_GPT_MODEL };
-    case "google":
-      return { adapter: createGoogleProvider(apiKey), model: DEFAULT_GEMINI_MODEL };
-  }
-}
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -50,13 +40,13 @@ Deno.serve(async (req) => {
     if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const trimmedKey = apiKey.trim();
-    const { adapter, model } = providerFor(provider, trimmedKey);
+    const adapter = createProviderAdapter(provider, trimmedKey);
 
     try {
       await adapter.generate({
         systemPrompt: "你只需要回覆「測試成功」四個字，不要回覆其他任何內容。",
         messages: [{ role: "user", content: "這是一次金鑰有效性測試，請直接回覆指定內容。" }],
-        model,
+        model: TEST_MODEL_BY_PROVIDER[provider as ProviderSlug],
         maxOutputTokens: 16,
       });
     } catch (err) {
@@ -79,7 +69,11 @@ Deno.serve(async (req) => {
       return jsonError("儲存金鑰時發生錯誤，請稍後重試", 500, "internal_error", headers);
     }
 
-    return new Response(JSON.stringify({ ok: true }), { headers });
+    // 金鑰已經確定測試通過、存好了，模型清單抓取失敗不影響這次儲存本身算成功
+    // （brainstorms/2026-09-22-provider-model-selection.md Q3）。
+    const models = await refreshCachedModels(admin, user.id, provider, adapter);
+
+    return new Response(JSON.stringify({ ok: true, models: models ?? [] }), { headers });
   } catch (err) {
     console.error("save-api-key 未預期錯誤", err);
     return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);

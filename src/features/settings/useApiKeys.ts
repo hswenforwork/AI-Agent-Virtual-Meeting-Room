@@ -4,9 +4,17 @@ import { useAuth } from "../auth/AuthProvider";
 
 export type ProviderSlug = "anthropic" | "openai" | "google";
 
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
 export interface ApiKeyStatus {
   provider: ProviderSlug;
   updatedAt: string;
+  selectedModel: string | null;
+  cachedModels: ModelOption[];
+  modelsFetchedAt: string | null;
 }
 
 async function extractErrorMessage(error: unknown, fallback: string): Promise<string> {
@@ -32,9 +40,17 @@ export function useApiKeyStatus() {
     queryKey: ["api-key-status", user?.id],
     enabled: !!user,
     queryFn: async (): Promise<ApiKeyStatus[]> => {
-      const { data, error } = await supabase.from("user_provider_keys").select("provider, updated_at");
+      const { data, error } = await supabase
+        .from("user_provider_keys")
+        .select("provider, updated_at, selected_model, cached_models, models_fetched_at");
       if (error) throw error;
-      return (data ?? []).map((row) => ({ provider: row.provider as ProviderSlug, updatedAt: row.updated_at }));
+      return (data ?? []).map((row) => ({
+        provider: row.provider as ProviderSlug,
+        updatedAt: row.updated_at,
+        selectedModel: row.selected_model,
+        cachedModels: (row.cached_models ?? []) as ModelOption[],
+        modelsFetchedAt: row.models_fetched_at,
+      }));
     },
   });
 }
@@ -49,6 +65,40 @@ export function useSaveApiKey() {
         body: { provider, apiKey },
       });
       if (error) throw new Error(await extractErrorMessage(error, "儲存金鑰失敗，請稍後重試"));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["api-key-status", user?.id] });
+    },
+  });
+}
+
+export function useSelectModel() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ provider, model }: { provider: ProviderSlug; model: string }) => {
+      const { error } = await supabase.functions.invoke("select-provider-model", {
+        body: { provider, model },
+      });
+      if (error) throw new Error(await extractErrorMessage(error, "儲存模型偏好失敗，請稍後重試"));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["api-key-status", user?.id] });
+    },
+  });
+}
+
+export function useRefreshModels() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (provider: ProviderSlug) => {
+      const { error } = await supabase.functions.invoke("refresh-provider-models", {
+        body: { provider },
+      });
+      if (error) throw new Error(await extractErrorMessage(error, "重新整理模型清單失敗，請稍後重試"));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["api-key-status", user?.id] });

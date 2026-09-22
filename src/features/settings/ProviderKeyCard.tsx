@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { format } from "date-fns";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, RefreshCw } from "lucide-react";
 import type { ApiKeyStatus, ProviderSlug } from "./useApiKeys";
-import { useDeleteApiKey, useSaveApiKey } from "./useApiKeys";
+import { useDeleteApiKey, useRefreshModels, useSaveApiKey, useSelectModel } from "./useApiKeys";
 
 const PROVIDER_LABEL: Record<ProviderSlug, string> = {
   anthropic: "Claude（Anthropic）",
@@ -22,8 +22,28 @@ export function ProviderKeyCard({ provider, status }: { provider: ProviderSlug; 
   const [error, setError] = useState<string | null>(null);
   const saveApiKey = useSaveApiKey();
   const deleteApiKey = useDeleteApiKey();
+  const selectModel = useSelectModel();
+  const refreshModels = useRefreshModels();
 
   const configured = !!status;
+
+  async function handleSelectModel(model: string) {
+    setError(null);
+    try {
+      await selectModel.mutateAsync({ provider, model });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "儲存模型偏好失敗，請稍後重試");
+    }
+  }
+
+  async function handleRefreshModels() {
+    setError(null);
+    try {
+      await refreshModels.mutateAsync(provider);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重新整理模型清單失敗，請稍後重試");
+    }
+  }
 
   async function handleSave() {
     const trimmed = value.trim();
@@ -83,6 +103,34 @@ export function ProviderKeyCard({ provider, status }: { provider: ProviderSlug; 
           </div>
         )}
       </div>
+
+      {configured && !editing && (
+        <div className="mt-3 flex items-center gap-2">
+          <select
+            value={status!.selectedModel ?? ""}
+            onChange={(e) => handleSelectModel(e.target.value)}
+            disabled={selectModel.isPending || status!.cachedModels.length === 0}
+            className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-slate-500 focus:outline-none disabled:opacity-50"
+          >
+            <option value="" disabled>
+              {status!.cachedModels.length === 0 ? "尚未取得模型清單" : "選擇要使用的模型"}
+            </option>
+            {status!.cachedModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleRefreshModels}
+            disabled={refreshModels.isPending}
+            title="重新整理模型清單"
+            className="rounded-md border border-slate-300 p-1.5 text-slate-500 hover:border-slate-500 hover:text-slate-800 disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={refreshModels.isPending ? "animate-spin" : ""} />
+          </button>
+        </div>
+      )}
 
       {editing && (
         <div className="mt-3 flex flex-col gap-2">

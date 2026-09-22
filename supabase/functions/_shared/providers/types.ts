@@ -34,6 +34,14 @@ export interface ProviderError {
   raw: unknown;
 }
 
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
 export interface AIProvider {
   generate(request: GenerateRequest): Promise<GenerateResult>;
+  // 對應 brainstorms/2026-09-22-provider-model-selection.md：即時呼叫供應商自己的
+  // 模型清單 API，不維護一份會過期的精選清單（今天才踩到 gemini-2.5-flash 過期的教訓）。
+  listModels(): Promise<ModelOption[]>;
 }

@@ -125,6 +125,9 @@ export interface UserProviderKeyRow {
   id: string;
   user_id: string;
   provider: "anthropic" | "openai" | "google";
+  selected_model: string | null;
+  cached_models: { id: string; label: string }[];
+  models_fetched_at: string | null;
   updated_at: string;
   created_at: string;
 }

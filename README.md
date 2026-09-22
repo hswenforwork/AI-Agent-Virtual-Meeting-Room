@@ -40,6 +40,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0007_worker_tasks.sql`（工作型代理／任務卡片，見下方「附加設定」）
    - `supabase/migrations/0008_room_sidebar_history.sql`（左側聊天室歷史清單，見下方「附加設定」）
    - `supabase/migrations/0009_byok_api_keys.sql`（使用者自己輸入 API key，見下方「附加設定」）
+   - `supabase/migrations/0010_provider_model_selection.sql`（使用者選擇模型，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -113,10 +114,21 @@ Supabase Vault，部署者跟其他使用者都看不到明碼（設計見
 這個 migration 會啟用 `supabase_vault` extension、建立金鑰資料表，跟只授權給 service_role
 呼叫的加解密函式，不需要額外的 Dashboard 設定。
 
+### 附加設定：使用者選擇模型（選用但建議）
+
+金鑰測試通過、存好之後，網站會自動抓一次該供應商目前實際可用的模型清單（不是寫死在程式碼裡
+的清單，避免模型過期），使用者可以在「設定」頁的下拉選單挑選要用哪個模型，也可以按重新整理
+按鈕手動拿最新清單；工作型代理（Managed Agents）用的 Claude 模型也會跟著使用者的選擇走，
+沒選過就繼續用環境變數的預設值（設計見
+[`brainstorms/2026-09-22-provider-model-selection.md`](brainstorms/2026-09-22-provider-model-selection.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0010_provider_model_selection.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
 `.github/workflows/deploy-functions.yml` 已經設定好，只要 repo 有兩個 Secrets，push 到 `main`
-（或改到 `supabase/functions/` 底下的檔案）就會自動部署五個函式，**不需要 Codespaces、不需要終端機**：
+（或改到 `supabase/functions/` 底下的檔案）就會自動掃描並部署 `supabase/functions/` 底下的每一個函式，**不需要 Codespaces、不需要終端機**：
 
 1. 到 [Supabase Dashboard → 帳號設定 → Access Tokens](https://supabase.com/dashboard/account/tokens)
    建立一個 **Personal Access Token**，複製起來。
@@ -138,6 +150,8 @@ npx supabase@latest functions deploy file-register
 npx supabase@latest functions deploy worker-task-start
 npx supabase@latest functions deploy save-api-key
 npx supabase@latest functions deploy delete-api-key
+npx supabase@latest functions deploy refresh-provider-models
+npx supabase@latest functions deploy select-provider-model
 ```
 
 （Codespaces 有時候會遇到 DNS 暫時連不出去的狀況，導致 `failed to bundle function`；

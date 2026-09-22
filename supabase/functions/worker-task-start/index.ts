@@ -31,6 +31,9 @@ type AdminClient = ReturnType<typeof supabaseAdmin>;
 // 這裡只需要知道工具名稱本身。
 const CONSULT_TOOL_NAME = "consult_other_ai";
 const PROGRESS_LOG_MAX_ENTRIES = 6;
+// 工作型代理預設用比一般聊天更強的模型（opus），跟 agent-run 聊天用的 DEFAULT_CLAUDE_MODEL
+// 分開設定；使用者在「設定」頁選過模型的話，優先用使用者選的（brainstorms/2026-09-22-provider-model-selection.md Q8）。
+const DEFAULT_WORKER_AGENT_MODEL = Deno.env.get("DEFAULT_WORKER_AGENT_MODEL") ?? "claude-opus-5";
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -81,10 +84,18 @@ Deno.serve(async (req) => {
       );
     }
 
+    const { data: keyRow } = await admin
+      .from("user_provider_keys")
+      .select("selected_model")
+      .eq("user_id", user.id)
+      .eq("provider", "anthropic")
+      .maybeSingle();
+    const model = keyRow?.selected_model ?? DEFAULT_WORKER_AGENT_MODEL;
+
     let agentId: string;
     let environmentId: string;
     try {
-      const resources = await getOrCreateUserManagedAgent(admin, user.id, apiKey);
+      const resources = await getOrCreateUserManagedAgent(admin, user.id, apiKey, model);
       agentId = resources.agentId;
       environmentId = resources.environmentId;
     } catch (err) {

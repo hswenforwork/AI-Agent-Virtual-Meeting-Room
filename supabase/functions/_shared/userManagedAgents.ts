@@ -13,6 +13,7 @@ export async function getOrCreateUserManagedAgent(
   admin: ReturnType<typeof supabaseAdmin>,
   userId: string,
   apiKey: string,
+  model: string,
 ): Promise<UserManagedAgentResources> {
   const { data: existing } = await admin
     .from("user_managed_agents")
@@ -22,7 +23,7 @@ export async function getOrCreateUserManagedAgent(
   if (existing) return { agentId: existing.agent_id, environmentId: existing.environment_id };
 
   const environment = await createManagedEnvironment(apiKey);
-  const agent = await createManagedAgent(apiKey);
+  const agent = await createManagedAgent(apiKey, model);
 
   const { data: inserted, error } = await admin
     .from("user_managed_agents")
