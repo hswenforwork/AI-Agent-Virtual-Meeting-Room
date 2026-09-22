@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import {
   useRooms,
@@ -13,7 +13,7 @@ import { RoomListItem } from "./RoomListItem";
 import { DeleteRoomDialog } from "./DeleteRoomDialog";
 import type { RoomRow } from "../../types/database";
 
-export function RoomSidebar({ onNavigate }: { onNavigate?: () => void }) {
+export function RoomSidebar({ onNavigate, collapsed }: { onNavigate?: () => void; collapsed?: boolean }) {
   const { data: rooms, isLoading } = useRooms();
   const createRoom = useCreateRoom();
   const renameRoom = useRenameRoom();
@@ -46,6 +46,41 @@ export function RoomSidebar({ onNavigate }: { onNavigate?: () => void }) {
     navigate("/");
     onNavigate?.();
   };
+
+  // 收合成窄 icon 列：只留「新對話」跟每個房間的圓形頭像（房間名稱首字），
+  // 重新命名／封存／刪除要展開側欄才能操作（brainstorms/2026-09-22-sidebar-resize-ai-context.md Q3）。
+  if (collapsed) {
+    return (
+      <div className="flex h-full w-full flex-col items-center gap-1 bg-slate-50 py-3">
+        <button
+          onClick={handleNewChat}
+          disabled={createRoom.isPending}
+          title="新對話"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50"
+        >
+          <Plus size={16} />
+        </button>
+        <div className="min-h-0 w-full flex-1 space-y-1 overflow-y-auto px-2 pt-1">
+          {activeRooms.map((room) => (
+            <NavLink
+              key={room.id}
+              to={`/rooms/${room.id}`}
+              title={room.name}
+              className={({ isActive }) =>
+                `mx-auto flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold ${
+                  isActive
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                }`
+              }
+            >
+              {room.name.trim().charAt(0).toUpperCase() || "?"}
+            </NavLink>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
