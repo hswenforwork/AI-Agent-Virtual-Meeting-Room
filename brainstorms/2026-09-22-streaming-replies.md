@@ -19,3 +19,8 @@
 - 問題：(a) 走 Realtime UPDATE 準串流（先 insert 空白訊息、節流 update content）（建議） (b) 改用直接 SSE/fetch 串流（前端直接接供應商）
 - 已記錄：使用者選 **(a) 確定走 Realtime UPDATE 準串流**。
 - 影響：維持「使用者切走分頁、多代理同時回覆都不受影響」的既有設計，`agent-run` 跟前端 `useMessages.ts` 的修改範圍都在既有模式（任務卡片）延伸，不需要重新設計 `chat-dispatch` 觸發 `agent-run` 的機制。
+
+### Q2：三家供應商的串流呼叫要一次補齊還是分批？
+- 問題：(a) 一次全部補齊三家（建議） (b) 先只做 Claude（Anthropic），其他兩家之後再說
+- 已記錄：使用者選 **(a) 一次全部補齊三家**。
+- 影響：實作前要分別查證 Anthropic／OpenAI／Google 三家目前各自的串流 API 規格（SSE event 格式、`stream: true` 或對應參數的確切欄位名稱），不能只查一家就套用到其他兩家；`AIProvider` 介面要新增一個串流版本的方法（例如 `generateStream()`），三個 provider adapter（`anthropic.ts`／`openai.ts`／`google.ts`）都要實作。
