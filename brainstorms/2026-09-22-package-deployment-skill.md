@@ -1,6 +1,6 @@
 # 打包成部署用 Skill：腦力激盪／探索紀錄
 日期：2026-09-22 · 目標：把「AI 協作室」從零到有的整個部署流程（Supabase 專案建立、DB migrations、Edge Functions、前端、GitHub Actions、Managed Agents 工作型代理設定）包成一個 Claude Skill，讓 AI 能自動帶著使用者——包含技術程度很低的使用者——從頭到尾把這個工具架設起來
-狀態：進行中
+狀態：完成
 背景來源：
 - `README.md`（目前的手動設定手冊，這次要轉成 skill 引導的內容基礎）
 - `docs/MVP規劃-v2.md`、三份 `brainstorms/` 訪談紀錄（專案完整脈絡）
@@ -76,6 +76,12 @@
 6. **自動化程度**：能用 API 就用 API——GitHub 全部走 API；Supabase 預設主動引導申請 Management API token 來自動化建專案/跑 migration/設 secrets，使用者不給 token 才退回手動貼 SQL；真正必須人工的步驟（帳號註冊、API key 申請、beta 開通、Pages 來源切換視情況）要合併、簡化到最少次數（Q7、Q9）。
 7. **驗收**：Skill 自己用 GitHub API 查 workflow 是否跑綠，紅燈自己先嘗試判斷原因；最後一定還是要請使用者親自打開網站、登入、發訊息確認體驗（AI 沒有瀏覽器操作使用者帳號的能力）（Q8）。
 
+### Q10（收尾追問的兩個小問題）
+- 問題 1：使用者不願意提供 Supabase Management API token 時，要不要重新設計一套更簡化的手動備援流程？
+  已記錄：**不要**。使用者原話：「我要全自動。」→ Skill 以 Management API token 為唯一主線路徑，不額外投入設計平行的簡化手動備援；README 既有的手動貼 SQL 流程維持原樣、不動它，Skill 不基於它重新設計。
+- 問題 2：GitHub Pages 來源設定能不能也用 API 切換？
+  已記錄：**所有能用 API 的都要用 API**，以減少人工操作為最高原則。→ 實作時要查證 GitHub API 是否支援直接切換 Pages build_type（`workflow` vs `legacy`），能用就用，不要求人工進 Settings 頁面點。
+- 影響：這兩題都是把 Q7/Q9「能用 API 就用 API、人工步驟極簡化」的原則講得更絕對——Skill 設計上不要為了「照顧不給 token 的使用者」而分心去做兩套流程，全力把自動化路徑做好、做對。
+
 ## 待釐清事項
-- 使用者不願意提供 Supabase Management API token 時的手動備援路線，要沿用現有 README 的貼 SQL 流程、還是也要重新設計成更簡化的版本 → 實作時視情況決定
-- GitHub Pages Source 設定（Deploy from a branch → GitHub Actions）能不能也用 GitHub API 直接切換，還是仍需要人工到 Settings 頁面點 → 實作時查證 GitHub API 是否支援
+（無，訪談完成）
