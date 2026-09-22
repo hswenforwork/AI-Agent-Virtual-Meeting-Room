@@ -8,9 +8,8 @@ const DEFAULT_ROOM_NAME = "新對話";
 
 export function useRooms() {
   const { user } = useAuth();
-  const queryClient = useQueryClient();
 
-  const query = useQuery({
+  return useQuery({
     queryKey: ["rooms", user?.id],
     enabled: !!user,
     queryFn: async (): Promise<RoomRow[]> => {
@@ -24,6 +23,16 @@ export function useRooms() {
       return data ?? [];
     },
   });
+}
+
+// 訂閱要在整個應用程式裡只掛載一次（AppLayout），不能放進 useRooms() 本體——
+// useRooms() 現在同時被 RoomSidebar 跟 RoomPage 呼叫，如果訂閱邏輯留在 hook 裡，
+// 每多一個呼叫端就會多開一個 channel name 完全相同的 Supabase Realtime channel，
+// 對同一個 topic 重複 subscribe 會出錯，而這個 app 沒有 Error Boundary，
+// 一出錯就會把整棵 React tree 都卸載掉，變成整頁空白（連 sidebar、登出按鈕都不見）。
+export function useRoomsRealtimeSync() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!user) return;
@@ -54,8 +63,6 @@ export function useRooms() {
       supabase.removeChannel(channel);
     };
   }, [user, queryClient]);
-
-  return query;
 }
 
 export function useCreateRoom() {
