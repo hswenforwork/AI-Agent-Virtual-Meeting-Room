@@ -1,17 +1,27 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { LayoutGrid, MessageSquare, LogOut, Menu, Settings } from "lucide-react";
+import { LayoutGrid, MessageSquare, LogOut, Menu, Settings, ChevronLeft, ChevronRight } from "lucide-react";
 import { ChatPanel } from "../features/messages/ChatPanel";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
 import { supabase } from "../lib/supabase";
 import { useRooms } from "../features/rooms/useRooms";
 import { useLayoutContext } from "./AppLayout";
+import { useIsDesktop, useResizablePanel } from "../lib/useResizablePanel";
+
+const COLLAPSED_WIDTH = 56;
 
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const [mobileView, setMobileView] = useState<"chat" | "workspace">("chat");
   const { openDrawer } = useLayoutContext();
   const { data: rooms } = useRooms();
+  const isDesktop = useIsDesktop();
+  const workspace = useResizablePanel("ai-collab-room:workspace", {
+    defaultWidth: 360,
+    minWidth: 280,
+    maxWidth: 560,
+    direction: "right",
+  });
 
   if (!roomId) return null;
 
@@ -58,11 +68,31 @@ export function RoomPage() {
           <ChatPanel roomId={roomId} />
         </div>
         <div
-          className={`min-h-0 w-full md:w-[360px] ${
+          className={`relative min-h-0 w-full shrink-0 md:w-auto ${
             mobileView === "chat" ? "hidden md:block" : "block"
           }`}
+          style={isDesktop ? { width: workspace.collapsed ? COLLAPSED_WIDTH : workspace.width } : undefined}
         >
-          <WorkspaceTabs roomId={roomId} />
+          {isDesktop && !workspace.collapsed && (
+            <div
+              onPointerDown={workspace.startResize}
+              className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-slate-300"
+            />
+          )}
+          {isDesktop && (
+            <button
+              onClick={() => workspace.setCollapsed((v) => !v)}
+              title={workspace.collapsed ? "展開工作區" : "收合工作區"}
+              className="absolute -left-3 top-1/2 z-10 hidden -translate-y-1/2 rounded-full border border-slate-300 bg-white p-0.5 text-slate-400 hover:text-slate-700 md:flex"
+            >
+              {workspace.collapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
+          <WorkspaceTabs
+            roomId={roomId}
+            collapsed={isDesktop && workspace.collapsed}
+            onExpand={() => workspace.setCollapsed(false)}
+          />
         </div>
       </div>
     </div>
