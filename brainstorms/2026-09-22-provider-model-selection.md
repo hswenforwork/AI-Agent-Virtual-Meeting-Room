@@ -59,3 +59,11 @@
 - 問題：(a) 自動選清單第一個 (b) 繼續用現在寫死的環境變數預設值（建議）
 - 已記錄：使用者選 **(b) 繼續用現在寫死的環境變數預設值**。
 - 影響：`user_provider_keys`（或新欄位）裡的「使用者選的模型」在使用者真正手動選擇之前維持 `null`；`agent-run` 的模型解析順序變成：使用者選的模型（非 null）→ 環境變數預設值（`DEFAULT_CLAUDE_MODEL`／`DEFAULT_GPT_MODEL`／`DEFAULT_GEMINI_MODEL`，跟今天修好的 bug 是同一組）。這代表環境變數預設值這幾個常數**不會被這次功能取代**，仍然要維護、仍然可能過期，只是變成「使用者沒手動選時的兜底」而不是唯一途徑。
+
+### Q8：工作型代理（Managed Agents）的模型要不要也讓使用者選？
+- 問題：目前 `_shared/managedAgents.ts` 的 `createManagedAgent()` 建立 agent 時寫死 `model: "claude-opus-5"`，跟一般聊天的模型選擇是分開的機制，要不要一起讓使用者選？
+- 已記錄：使用者選 **要，一起讓使用者選**。
+- 影響：複雜度再提高一層，因為 Managed Agents 的 agent 是「第一次用時建立、之後重複使用」的持久物件（`user_managed_agents` 表存著 `agent_id`），不是每次呼叫都重新指定模型：
+  - 需要查證 Managed Agents API 是否支援「更新一個既有 agent 的 model」（Managed Agents 的說明提到 agent 是「persisted, versioned」的設定物件，理論上支援更新，但要實際查證端點與欄位，不要用印象猜）
+  - 待釐清：使用者在「設定」頁改了偏好的 Claude 模型之後，是要（a）連動更新這個使用者已經建好的 Managed Agent（呼叫更新 API）、還是（b）只影響下一個全新建立的 agent、舊的維持原狀 → 下一題問
+
