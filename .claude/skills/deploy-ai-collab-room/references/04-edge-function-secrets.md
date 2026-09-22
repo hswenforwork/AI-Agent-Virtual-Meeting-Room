@@ -23,11 +23,11 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 
 拿到之後只在工具呼叫裡使用，不寫進任何 commit 的檔案。
 
-## 用 Management API 設定 secrets
+## 設定 secrets：MCP 優先，curl 次之，手動貼最後
 
-`POST /v1/projects/{project_ref}/secrets`（⚠️ 執行前用 WebFetch 核對 `https://supabase.com/docs/reference/api/v1-create-a-secret` 或跟 Phase 2 一樣打 `/api/v1-json` 核對欄位名稱），依過去理解，body 是一個陣列，每個元素 `{"name": "...", "value": "..."}`，可以一次把四組全送出去。
-
-三種方式的判斷邏輯跟 Phase 3 一樣：能用 Management API 就直接做；做不到才請使用者到 Supabase Dashboard 的 **Edge Functions → Secrets** 頁面手動貼——但一樣要**一次把四組名稱／值都列出來**，不要一個一個問。
+1. 先 `ToolSearch` 查 `supabase`，有 `mcp__supabase__*` 工具的話用它設定 secrets（通常會有直接對應的工具），跳過下面兩點。
+2. 沒有的話用 Management API：`POST /v1/projects/{project_ref}/secrets`（⚠️ 執行前用 WebFetch 核對 `https://supabase.com/docs/reference/api/v1-create-a-secret` 或跟 Phase 2 一樣打 `/api/v1-json` 核對欄位名稱），依過去理解，body 是一個陣列，每個元素 `{"name": "...", "value": "..."}`，可以一次把四組全送出去。
+3. 都不行才請使用者到 Supabase Dashboard 的 **Edge Functions → Secrets** 頁面手動貼——但一樣要**一次把四組名稱／值都列出來**，不要一個一個問。
 
 ## 完成判斷
 四個 secrets 都設定成功（Management API 回應正常，或使用者回報已經貼完）。

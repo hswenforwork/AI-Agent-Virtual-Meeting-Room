@@ -43,7 +43,7 @@ body 內容直接照抄這個 repo 的 `scripts/setup-managed-agent.sh`（裡面
 
 ## 設定 Managed Agents 相關的 Supabase secrets
 
-跟 Phase 4 一樣的方式（Management API 優先），設定：
+跟 Phase 4 一樣的優先順序（Supabase MCP 工具優先，其次 Management API curl，最後才手動貼），設定：
 
 ```
 MANAGED_AGENTS_AGENT_ID=<agent_id>

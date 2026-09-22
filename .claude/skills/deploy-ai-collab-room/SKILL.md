@@ -24,14 +24,26 @@ description: Use this skill when the user wants to deploy, set up, install, fork
 4. **能查證就查證，不要憑印象猜 API 規格。** 這個技能撰寫時，作者對 Supabase Management API 的網路存取被擋住，所以本文件裡凡標記「⚠️ 執行前先驗證」的地方，代表寫的是「最後一次確認過的樣子」，執行時要先用 WebFetch 抓官方文件或該 API 自己的 OpenAPI spec 核對一次，不要照抄本文件就送出真正的請求。
 5. **每個階段結束都要有一個可驗證的「完成」訊號**（workflow 跑綠、API 回傳 200、查得到剛建立的資源），不要憑感覺說「應該好了」。
 
+## Supabase 操作優先用官方 MCP 工具，不是手刻 curl
+
+這個 repo 根目錄已經有 `.mcp.json`，宣告了 Supabase 官方的 MCP Server（`@supabase/mcp-server-supabase`）。**每次要對 Supabase 做任何操作之前，先用 `ToolSearch` 查一次 `supabase`**：
+
+- **查得到 `mcp__supabase__*` 工具**：全部改用這些工具，不要再手刻 curl 呼叫 Management API。這樣不用自己猜欄位名稱、不用處理加密／分頁，也不會因為記錯規格而送出錯誤的請求——本文件裡所有「⚠️ 執行前先驗證」加「照抄本文件的 curl 規格」的段落，只在**查不到這些 MCP 工具時**才適用，當作備援手段。
+- **查不到**：代表這個 session 還沒連上 Supabase MCP Server，通常是因為環境變數 `SUPABASE_ACCESS_TOKEN` 沒設定，或使用者的 Claude Code 還沒信任／啟用 `.mcp.json` 裡的這個 server。跟使用者說明一次（不用每個階段都重複問）：
+
+  > 這個專案設定了 Supabase 官方的自動化工具，能讓我操作得更準確、更不容易出錯，但需要你設定一個環境變數 `SUPABASE_ACCESS_TOKEN`（到 https://supabase.com/dashboard/account/tokens 申請一組 Personal Access Token，設定成這個環境變數）並讓 Claude Code 信任這個 repo 裡的 MCP 設定。設定好之後跟我說一聲，我會重新檢查一次；沒有的話我還是可以直接用 curl 呼叫 Supabase 的 API 完成，只是可靠度稍微低一點。
+
+  使用者選擇不設定，或這個環境本來就連不上外部 MCP Server（例如作者撰寫這份技能時的環境），就照本文件各階段寫的 curl／WebFetch 查證流程走，不要卡住不動。
+
 ## 前置條件
 
 執行這個 Skill 之前，Claude 所在的 session 必須：
 - 有 GitHub 工具存取權（`mcp__github__*`），並且已經連上這個原始 repo（`hswenforwork/AI-Agent-Virtual-Meeting-Room`，或它的某個 fork）
-- 有 Bash 工具（用來跑 curl／node 做 Supabase Management API 呼叫、跑 migration）
-- 有 WebFetch 或等效工具（用來執行前查證 API 規格）
+- 有 Bash 工具（用來跑 curl／node 做 Supabase Management API 呼叫、跑 migration，在拿不到 Supabase MCP 工具時使用）
+- 有 WebFetch 或等效工具（用來執行前查證 API 規格，在拿不到 Supabase MCP 工具時使用）
 
-如果任何一項不滿足，先如實告訴使用者缺什麼，不要硬著頭皮做到一半才發現卡住。
+Supabase MCP 工具是加分項，不是前置條件——有就用，沒有就退回 curl，不要因為沒有就中止整個部署。
+如果 GitHub 工具或 Bash 都不滿足，才需要先如實告訴使用者缺什麼，不要硬著頭皮做到一半才發現卡住。
 
 ## 流程總覽
 
@@ -39,9 +51,9 @@ description: Use this skill when the user wants to deploy, set up, install, fork
 |---|---|---|---|
 | 0 | 本文件 | 確認起點、跟使用者說明接下來會發生什麼 | AI |
 | 1 | `references/01-fork-repo.md` | Fork repo 到使用者帳號下 | AI（GitHub API） |
-| 2 | `references/02-supabase-project.md` | 建立 Supabase 專案、跑 7 個 migration | AI 優先（Management API），拿不到 token 才退化成引導使用者手動貼 SQL |
+| 2 | `references/02-supabase-project.md` | 建立 Supabase 專案、跑 3 個 migration | AI 優先（Supabase MCP，其次 Management API curl），都拿不到才退化成引導使用者手動貼 SQL |
 | 3 | `references/03-github-config.md` | 設定 GitHub repo 的 Variables/Secrets、開 Pages | AI（GitHub API），Pages 來源切換視 API 支援情況 |
-| 4 | `references/04-edge-function-secrets.md` | 設定 Supabase Edge Function 的 secrets（Anthropic key 等） | AI 優先（Management API） |
+| 4 | `references/04-edge-function-secrets.md` | 設定 Supabase Edge Function 的 secrets（Anthropic key 等） | AI 優先（Supabase MCP，其次 Management API curl） |
 | 5 | `references/05-verify-basic-deploy.md` | 確認三個 GitHub Actions 都跑綠、請使用者實際打開網站測試 | AI 查狀態 + 使用者最後手動驗收 |
 | 6 | `references/06-managed-agents.md` | 「工作型代理」完整設定（Managed Agents beta、Gemini 求助、GitHub 存取） | 這關最依賴使用者帳號權限，AI 盡量自動、人工步驟本身要極簡化 |
 | 7 | `references/07-wrap-up.md` | 最終驗收、交付使用手冊 | AI 查狀態 + 使用者最後測試 |
