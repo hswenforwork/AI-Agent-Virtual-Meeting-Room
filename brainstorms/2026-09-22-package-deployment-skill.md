@@ -85,3 +85,6 @@
 
 ## 待釐清事項
 （無，訪談完成）
+
+## 成果
+Skill 已實作於 [`.claude/skills/deploy-ai-collab-room/`](../.claude/skills/deploy-ai-collab-room/SKILL.md)，含 `SKILL.md` 主流程索引、7 個階段的 `references/` 文件、`troubleshooting.md`。README 已加上一句指向這個 Skill。

@@ -9,6 +9,11 @@
 目前 MVP **只有 Claude（Anthropic API）真正可用**；GPT／Gemini 的介面已經留好，
 之後申請到 API key 再啟用即可，不需要改架構。
 
+**想要一份自己的？** 如果你是用 Claude Code 連到這個 repo，直接請它「幫我部署這個工具」即可——
+它會自動叫用 [`.claude/skills/deploy-ai-collab-room`](.claude/skills/deploy-ai-collab-room/SKILL.md) 這個 Skill，
+從 fork 專案、建立 Supabase、部署到 GitHub Pages，一路帶到工作型代理設定，不需要照著下面的手動步驟自己做。
+下面的手動步驟是給沒有用 Claude Code、想自己一步步照做的人看的。
+
 ---
 
 ## 給第一次設定的人：整個流程只需要瀏覽器
