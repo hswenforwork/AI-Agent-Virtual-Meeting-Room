@@ -67,3 +67,11 @@
   - 需要查證 Managed Agents API 是否支援「更新一個既有 agent 的 model」（Managed Agents 的說明提到 agent 是「persisted, versioned」的設定物件，理論上支援更新，但要實際查證端點與欄位，不要用印象猜）
   - 待釐清：使用者在「設定」頁改了偏好的 Claude 模型之後，是要（a）連動更新這個使用者已經建好的 Managed Agent（呼叫更新 API）、還是（b）只影響下一個全新建立的 agent、舊的維持原狀 → 下一題問
 
+### Q9：改了模型偏好，已經建好的 Managed Agent 要不要同步更新？
+- 問題：(a) 要，改偏好就順便呼叫 API 更新現有 agent 的 model（建議） (b) 不要，只影響下一個全新建立的 agent
+- 已記錄：使用者選 **(a) 要，改偏好就順便更新現有 agent 的 model**。
+- 影響：
+  - 實作前必須查證 Managed Agents API 是否有「更新既有 agent」的端點（例如 `PATCH /v1/agents/{agent_id}` 或類似），以及能不能只更新 `model` 欄位、不動 `system`／`tools` 設定——這是「不要憑印象猜規格」的具體案例，待實作時查證（`api.anthropic.com` 這類網域在目前這個 Claude Code session 會被網路政策擋住，要有心理準備走查文件受阻、退回照官方 SDK／既有程式碼模式推斷的備援路徑）
+  - 使用者儲存模型偏好時，如果這個使用者已經有 `user_managed_agents` 紀錄，`save-api-key`（或新的模型選擇 Edge Function）要多一步：呼叫更新 agent 的 API；如果還沒有 Managed Agent（還沒用過工作型代理），就不用做這步，等第一次觸發時 `createManagedAgent()` 直接用新選的模型建立即可
+  - 這個更新呼叫失敗要怎麼處理（要不要讓整個「儲存模型偏好」失敗）待實作時用既有「錯誤不影響主流程」的慣例處理（例如房間標題產生失敗不影響聊天），不特別再問
+
