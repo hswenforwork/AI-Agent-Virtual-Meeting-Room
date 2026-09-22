@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Outlet, useOutletContext } from "react-router-dom";
 import { RoomSidebar } from "../features/rooms/RoomSidebar";
+import { useRoomsRealtimeSync } from "../features/rooms/useRooms";
 
 export interface LayoutContext {
   openDrawer: () => void;
@@ -12,6 +13,9 @@ export function useLayoutContext() {
 
 export function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // 整個已登入畫面只掛載一次 AppLayout，房間列表的 Realtime 訂閱掛在這裡，
+  // 不要放進 useRooms() 本體——見 useRooms.ts 裡 useRoomsRealtimeSync 的說明。
+  useRoomsRealtimeSync();
 
   return (
     <div className="flex h-screen">
