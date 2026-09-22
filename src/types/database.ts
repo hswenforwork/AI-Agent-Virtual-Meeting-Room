@@ -26,6 +26,9 @@ export interface RoomRow {
   owner_id: string;
   name: string;
   description: string | null;
+  archived_at: string | null;
+  last_message_at: string;
+  title_generated: boolean;
   created_at: string;
   updated_at: string;
 }

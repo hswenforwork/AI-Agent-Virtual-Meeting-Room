@@ -1,21 +1,32 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { LayoutGrid, MessageSquare, LogOut } from "lucide-react";
+import { LayoutGrid, MessageSquare, LogOut, Menu } from "lucide-react";
 import { ChatPanel } from "../features/messages/ChatPanel";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
 import { supabase } from "../lib/supabase";
+import { useRooms } from "../features/rooms/useRooms";
+import { useLayoutContext } from "./AppLayout";
 
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const [mobileView, setMobileView] = useState<"chat" | "workspace">("chat");
+  const { openDrawer } = useLayoutContext();
+  const { data: rooms } = useRooms();
 
   if (!roomId) return null;
+
+  const roomName = rooms?.find((r) => r.id === roomId)?.name ?? "AI 協作室";
 
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
-        <h1 className="text-sm font-semibold">AI 協作室</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <button onClick={openDrawer} className="shrink-0 text-slate-400 hover:text-slate-700 md:hidden" title="聊天室清單">
+            <Menu size={18} />
+          </button>
+          <h1 className="truncate text-sm font-semibold">{roomName}</h1>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
           <div className="flex rounded-md border border-slate-200 md:hidden">
             <button
               onClick={() => setMobileView("chat")}
