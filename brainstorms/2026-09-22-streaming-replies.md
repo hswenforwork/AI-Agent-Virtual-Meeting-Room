@@ -1,6 +1,6 @@
 # AI 回覆改成串流輸出：腦力激盪／探索紀錄
 日期：2026-09-22 · 目標：聊天室裡的 AI 回覆從「等整段回完才一次顯示」改成逐字/逐段串流顯示
-狀態：進行中
+狀態：完成
 背景來源：
 - 現況：`chat-dispatch` 用 `EdgeRuntime.waitUntil()` 射後不理觸發 `agent-run`，前端從來不直接跟 `agent-run` 通訊；`agent-run` 呼叫供應商 API（非串流）拿到完整文字後才 `insert` 一則 `messages` 列，前端靠 Realtime 訂閱 `messages` 的 INSERT 事件才「看到」回覆。這個設計讓生成過程跟使用者是否還開著分頁脫鉤（使用者切走、@多個代理平行跑，都不受影響）
 - 已經在跑、可以參考的既有模式：工作型代理的任務卡片（`worker_tasks`／`messages.metadata`）就是用「先 insert 一則訊息拿到 id，之後多次 update 同一則訊息」的方式呈現進度，前端 `useMessages.ts` 的 Realtime 訂閱已經同時監聽 INSERT 跟 UPDATE
@@ -11,7 +11,11 @@
 「聊天室的 AI 回覆要改成串流輸出（逐字/逐段顯示），不要像現在這樣等供應商整個回完才一次顯示。」（延續自「這個專案在市場上缺乏什麼功能」的討論，使用者認可「透過 Realtime UPDATE 做準串流」這個推薦方向後選擇 grill-me）
 
 ## 摘要／重要決策
-（隨訪談持續更新）
+- **架構**：Realtime UPDATE 準串流——`agent-run` 先 insert 空白 `status="streaming"` 訊息，收串流片段時每 ~200ms 節流 update `content`，結束時補寫最後一次完整內容並把 `status` 改成 `completed`；前端 `useMessages.ts` 的 Realtime 訂閱要從只聽 INSERT 改成也聽 UPDATE（沿用既有任務卡片的模式）
+- **供應商範圍**：Anthropic／OpenAI／Google 三家一次補齊，`AIProvider` 介面新增串流方法，三個 adapter 都要實作；每家的 SSE 格式要各自查證，不能互相套用
+- **不變的部分**：Claude 的任務/問題分類呼叫維持現狀、維持非串流，只有確定是「問題」的那次生成呼叫才串流
+- **失敗處理**：串流中斷保留已生成的部分內容，加一行「回覆中斷」提示，`status` 設成 `failed`
+- **前端顯示**：直接用現有的 react-markdown 渲染累積內容，加閃爍光標／圓點表示還在生成，不另外寫簡化顯示邏輯
 
 ## 問答紀錄
 
@@ -44,3 +48,9 @@
 - 問題：(a) 直接用 react-markdown 渲染目前累積的內容，加閃爍光標／圓點表示還在生成（建議） (b) 串流過程先顯示純文字，完成後才切換成 markdown 渲染
 - 已記錄：使用者選 **(a) 直接用 react-markdown 渲染，加閃爍光標**。
 - 影響：`MessageBubble.tsx` 現有的 react-markdown 渲染邏輯不用重寫，`status === "streaming"` 時在內容後面附加一個會閃爍的游標／圓點元素（純 CSS animation，不需要額外套件）；不用另外寫一套「串流專用」的簡化顯示邏輯，實作範圍變小。
+
+## 待釐清事項
+（無，訪談完成；以下是實作時直接依既有慣例決定、不需要另外問使用者的細節）
+- `usage_json`／`usage_daily` 的用量統計：三家供應商的串流回應通常只在最後一個事件才帶完整用量數字，串流過程中不逐段累計，等串流結束拿到最終用量再一次寫入，跟現有非串流的寫入時機一致
+- 現有 `useAgentRunStatus` 的「○○回覆中…」提示：串流訊息本身出現後這個提示會跟串流游標同時存在一小段時間（`agent_runs.status` 整個串流期間都是 `running`），屬於可接受的小重複，不特別處理
+- 三家供應商各自的 SSE 事件格式，實作前依這個專案的一貫紀律查證目前規格，不憑印象猜（`api.anthropic.com`／`api.openai.com`／`generativelanguage.googleapis.com` 這類網域在這個 Claude Code session 可能被網路政策擋住，查證備援走官方 SDK 原始碼或既有程式碼模式推斷）
