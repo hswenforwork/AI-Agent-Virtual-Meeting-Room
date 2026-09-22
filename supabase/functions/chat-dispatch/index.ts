@@ -27,16 +27,16 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { messageId } = await req.json();
-    if (!messageId) return jsonError("缺少 messageId", 400);
+    if (!messageId) return jsonError("缺少 messageId", 400, headers);
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
 
@@ -46,9 +46,9 @@ Deno.serve(async (req) => {
       .eq("id", messageId)
       .single();
 
-    if (messageErr || !message) return jsonError("找不到這則訊息", 404, "not_found");
+    if (messageErr || !message) return jsonError("找不到這則訊息", 404, "not_found", headers);
     if (message.sender_type !== "user" || message.sender_user_id !== user.id) {
-      return jsonError("您沒有這則訊息的權限", 403, "forbidden");
+      return jsonError("您沒有這則訊息的權限", 403, "forbidden", headers);
     }
 
     const { data: membership } = await admin
@@ -57,7 +57,7 @@ Deno.serve(async (req) => {
       .eq("room_id", message.room_id)
       .eq("user_id", user.id)
       .maybeSingle();
-    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden");
+    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden", headers);
 
     // 房間第一則訊息：搶著把 title_generated 標記為 true 再產生標題（brainstorms/2026-09-22-room-sidebar-history.md Q4），
     // 用「update ... where title_generated = false」當簡易的搶旗標機制，避免使用者連續送兩則訊息時重複觸發兩次標題產生。
@@ -193,7 +193,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ runIds }), { headers });
   } catch (err) {
     console.error("chat-dispatch 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
 

@@ -19,9 +19,17 @@ export function friendlyProviderError(status: number): FriendlyError {
   return { code: "provider_error", message: "AI 供應商回傳錯誤，請稍後重試。" };
 }
 
-export function jsonError(message: string, status = 400, code = "bad_request") {
+// extraHeaders 一定要帶進呼叫端已經算好的 CORS headers（含 Access-Control-Allow-Origin）——
+// 少了這個，瀏覽器會把這個回應當成 CORS 失敗直接擋掉，前端的 fetch 連狀態碼、body 都讀不到，
+// supabase-js 只會回傳一個內容是網路層錯誤的 FunctionsFetchError，看不到這裡寫的訊息本身。
+export function jsonError(
+  message: string,
+  status = 400,
+  code = "bad_request",
+  extraHeaders: HeadersInit = {},
+) {
   return new Response(JSON.stringify({ error: { code, message } }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
   });
 }
