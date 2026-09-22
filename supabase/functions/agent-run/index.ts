@@ -20,7 +20,7 @@ const CLASSIFY_MAX_OUTPUT_TOKENS = 200;
 const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
   anthropic: Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5",
   openai: Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1",
-  google: Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-2.5-flash",
+  google: Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash",
 };
 
 function createProvider(providerSlug: ProviderSlug, apiKey: string): AIProvider {

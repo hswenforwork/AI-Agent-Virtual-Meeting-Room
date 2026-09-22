@@ -13,7 +13,7 @@ import { ProviderHttpError, type AIProvider } from "../_shared/providers/types.t
 
 const DEFAULT_CLAUDE_MODEL = Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5";
 const DEFAULT_GPT_MODEL = Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1";
-const DEFAULT_GEMINI_MODEL = Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-2.5-flash";
+const DEFAULT_GEMINI_MODEL = Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash";
 
 const PROVIDERS = ["anthropic", "openai", "google"] as const;
 type Provider = (typeof PROVIDERS)[number];

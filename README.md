@@ -54,7 +54,7 @@ DEFAULT_CLAUDE_MODEL=claude-sonnet-5
 MAX_AGENT_RUNS_PER_MESSAGE=4
 ```
 
-`DEFAULT_GPT_MODEL`（預設 `gpt-5.1`）、`DEFAULT_GEMINI_MODEL`（預設 `gemini-2.5-flash`）可選填，
+`DEFAULT_GPT_MODEL`（預設 `gpt-5.1`）、`DEFAULT_GEMINI_MODEL`（預設 `gemini-3.8-flash`）可選填，
 不填就用程式內的預設值。**不需要**設定 `ANTHROPIC_API_KEY`／`GEMINI_API_KEY` 這類全域 AI 金鑰——
 BYOK 上線後每個使用者在「設定」頁輸入自己的 key，部署者不用、也不會代墊任何 AI 費用。
 

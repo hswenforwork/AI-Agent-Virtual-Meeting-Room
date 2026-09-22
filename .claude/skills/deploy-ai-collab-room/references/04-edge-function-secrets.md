@@ -15,7 +15,7 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 
 三個都不需要使用者提供，AI 自己算、自己填。
 
-`DEFAULT_GPT_MODEL`（預設 `gpt-5.1`）、`DEFAULT_GEMINI_MODEL`（預設 `gemini-2.5-flash`）是選用的，
+`DEFAULT_GPT_MODEL`（預設 `gpt-5.1`）、`DEFAULT_GEMINI_MODEL`（預設 `gemini-3.8-flash`）是選用的，
 不填就用程式內建的預設值，一般部署不需要特別設定。
 
 ## 設定 secrets：MCP 優先，curl 次之，手動貼最後

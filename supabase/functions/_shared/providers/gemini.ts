@@ -4,7 +4,7 @@
 // 使用者已有 Gemini 免費 API key（見同一份文件「原本標記的矛盾已解決」）。
 
 const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
 
 export async function consultGemini(apiKey: string, prompt: string): Promise<string> {
   const res = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
