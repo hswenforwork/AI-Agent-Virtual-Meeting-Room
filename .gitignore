@@ -13,5 +13,8 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 
+# 個人環境變數／機密設定，不應該進版控（*.local 配不到 settings.local.json 這種中綴檔名）
+.claude/settings.local.json
+
 supabase/.branches
 supabase/.temp

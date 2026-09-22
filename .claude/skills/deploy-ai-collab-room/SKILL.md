@@ -35,6 +35,20 @@ description: Use this skill when the user wants to deploy, set up, install, fork
 
   使用者選擇不設定，或這個環境本來就連不上外部 MCP Server（例如作者撰寫這份技能時的環境），就照本文件各階段寫的 curl／WebFetch 查證流程走，不要卡住不動。
 
+### ⚠️ curl 備援路線在 Claude Code on the web／雲端環境會被網路政策擋住
+
+實測發現：在 Claude Code 的雲端 session（claude.ai/code）裡，即使 `SUPABASE_ACCESS_TOKEN` 已經設定好、Bash 也讀得到這個環境變數，直接用 `curl` 打 `api.supabase.com` 還是會被這個環境自己的網路存取政策擋下來（`CONNECT tunnel failed, response 403`，是政策拒絕，不是暫時連不上）——雲端環境預設的 **Trusted** 網路等級只放行套件庫、GitHub、雲端 SDK 這些網域，`api.supabase.com`不在預設清單裡。
+
+判斷方式：curl 打 Management API 任何端點，如果錯誤訊息提到 `CONNECT tunnel failed` 或 `agent proxy` 相關字樣，代表是這個網路政策擋住，不是 token 或 API 規格的問題，不要浪費時間重試或懷疑 token 錯誤。
+
+兩條路都試過還是不行的話，跟使用者說明兩個選項（一次講清楚，不要來回問）：
+
+> curl 呼叫 Supabase 這條備援路線在目前這個雲端環境被網路政策擋住了——你的環境目前只允許連到套件庫、GitHub 這些預設網域。有兩個選擇：
+> 1. 到環境設定把 Network access 從 Trusted 改成 Custom，加一行 `api.supabase.com` 到 Allowed domains（記得勾選「Also include default list of common package managers」保留原本能連的東西），存檔後開新 session 生效；MCP 工具本身的連線不受這個清單限制，如果 MCP 工具連得上，不需要做這步
+> 2. 這次先手動貼 SQL 到 Supabase Dashboard 的 SQL Editor 執行——對單一 migration 來說通常比重新設定網路政策快，我可以把 SQL 內容整段印出來給你複製
+
+沒有強制要走選項 1，使用者選 2 也完全可以，不要因為想要「全自動」就卡住不繼續。
+
 ## 前置條件
 
 執行這個 Skill 之前，Claude 所在的 session 必須：
