@@ -71,3 +71,4 @@
 - 影響：`worker-task-start` 要新增「使用者專屬 Managed Agents 資源」的建立與查詢邏輯（第一次用的時候自動建立、存起來、之後重複使用，邏輯比照 `scripts/setup-managed-agent.sh` 但改成程式內執行、不需要使用者手動跑腳本）；`consult_other_ai` 卡住求助用的 Gemini key，順理成章也改成用該使用者自己輸入的 Google 金鑰（不用另外問，這是 Q4／Q9 的自然結果）；部署者原本的全域 `ANTHROPIC_API_KEY`／`GEMINI_API_KEY`／`MANAGED_AGENTS_AGENT_ID`／`MANAGED_AGENTS_ENVIRONMENT_ID` 這幾個 Edge Function secrets，在這個功能上線後對「一般聊天」與「工作型代理」都不會再被使用到（可能還有其他用途要盤點，例如部署驗收階段）。
 
 ## 待釐清事項
+（無，訪談完成，開始實作）
