@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
-import { LayoutGrid, MessageSquare, LogOut, Menu } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { LayoutGrid, MessageSquare, LogOut, Menu, Settings } from "lucide-react";
 import { ChatPanel } from "../features/messages/ChatPanel";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
 import { supabase } from "../lib/supabase";
@@ -41,6 +41,9 @@ export function RoomPage() {
               <LayoutGrid size={16} />
             </button>
           </div>
+          <Link to="/settings" className="text-slate-400 hover:text-slate-700" title="設定">
+            <Settings size={16} />
+          </Link>
           <button
             onClick={() => supabase.auth.signOut()}
             className="text-slate-400 hover:text-slate-700"

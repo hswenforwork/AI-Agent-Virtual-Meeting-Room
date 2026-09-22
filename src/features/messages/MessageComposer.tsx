@@ -1,19 +1,29 @@
 // 點名代理用按鈕選擇（結構化 mention），不用解析文字裡的 @字串，避免代理改名/同名造成誤判
 // （對應原始規劃文件 6.2 節與 v2 規劃 Q5/Q6）。
+// 代理能不能被點名，不是看房間層級的 agents.status，是看「目前登入的這個使用者」自己
+// 有沒有設定該供應商的 API key（brainstorms/2026-09-22-user-api-key-settings.md Q5）。
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import type { AgentRow } from "../../types/database";
 import { useSendMessage } from "./useMessages";
+import { useApiKeyStatus } from "../settings/useApiKeys";
 
 export function MessageComposer({ roomId, agents }: { roomId: string; agents: AgentRow[] }) {
   const [content, setContent] = useState("");
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const sendMessage = useSendMessage(roomId);
+  const { data: keyStatuses } = useApiKeyStatus();
+
+  const configuredProviders = useMemo(
+    () => new Set((keyStatuses ?? []).map((s) => s.provider)),
+    [keyStatuses],
+  );
 
   function toggleAgent(agent: AgentRow) {
-    if (agent.status !== "active") {
-      toast.info(`${agent.name} 尚未啟用（尚未設定 API key）`);
+    if (!configuredProviders.has(agent.provider)) {
+      toast.info(`尚未設定 ${agent.name} 的 API key，請先到「設定」頁輸入你自己的 API key。`);
       return;
     }
     setSelectedAgentIds((prev) =>
@@ -40,7 +50,7 @@ export function MessageComposer({ roomId, agents }: { roomId: string; agents: Ag
       <div className="mb-2 flex flex-wrap gap-2">
         {agents.map((agent) => {
           const selected = selectedAgentIds.includes(agent.id);
-          const inactive = agent.status !== "active";
+          const inactive = !configuredProviders.has(agent.provider);
           return (
             <button
               key={agent.id}
@@ -55,10 +65,15 @@ export function MessageComposer({ roomId, agents }: { roomId: string; agents: Ag
               }`}
             >
               @{agent.name}
-              {inactive && "（未啟用）"}
+              {inactive && "（未設定金鑰）"}
             </button>
           );
         })}
+        {agents.some((agent) => !configuredProviders.has(agent.provider)) && (
+          <Link to="/settings" className="self-center text-xs text-slate-400 underline hover:text-slate-600">
+            到設定頁輸入 API key
+          </Link>
+        )}
       </div>
       <div className="flex items-end gap-2">
         <textarea

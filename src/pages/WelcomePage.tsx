@@ -1,5 +1,5 @@
-import { useNavigate } from "react-router-dom";
-import { Menu, LogOut, Plus } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Menu, LogOut, Plus, Settings } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { useCreateRoom } from "../features/rooms/useRooms";
 import { useLayoutContext } from "./AppLayout";
@@ -23,9 +23,14 @@ export function WelcomePage() {
           </button>
           <h1 className="text-sm font-semibold">AI 協作室</h1>
         </div>
-        <button onClick={() => supabase.auth.signOut()} className="text-slate-400 hover:text-slate-700" title="登出">
-          <LogOut size={16} />
-        </button>
+        <div className="flex items-center gap-3">
+          <Link to="/settings" className="text-slate-400 hover:text-slate-700" title="設定">
+            <Settings size={16} />
+          </Link>
+          <button onClick={() => supabase.auth.signOut()} className="text-slate-400 hover:text-slate-700" title="登出">
+            <LogOut size={16} />
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4 text-center">
