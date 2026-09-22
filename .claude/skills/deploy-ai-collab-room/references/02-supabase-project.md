@@ -1,7 +1,7 @@
 # 階段 2：建立 Supabase 專案、跑資料庫 migration
 
 ## 目標
-建立一個新的 Supabase 專案，依序執行 `supabase/migrations/0001` 到 `0007`，拿到之後每個階段都要用的三個值：
+建立一個新的 Supabase 專案，依序執行下方列出的 migration，拿到之後每個階段都要用的三個值：
 `project_ref`、`project_url`（`https://<project_ref>.supabase.co`）、`anon_key`。
 
 ## 第一選擇：Supabase 官方 MCP 工具
@@ -44,13 +44,14 @@
 3. 輪詢 `GET /v1/projects/{ref}` 直到狀態變成健康／可用（依實際回應欄位判斷，常見會是類似 `ACTIVE_HEALTHY` 這種值），通常需要等 1-2 分鐘，不要低於 10 秒的頻率狂打。
 4. 專案就緒後，查該專案的 API 金鑰端點拿到 `anon` public key（前端要用），組出 `project_url = https://<ref>.supabase.co`。
 
-## 依序執行 migration —— 全新專案只需要 4 個檔案，不是全部照編號跑
+## 依序執行 migration —— 全新專案只需要 5 個檔案，不是全部照編號跑
 
 ```
 supabase/migrations/0001_init.sql
 supabase/migrations/0002_storage.sql
 supabase/migrations/0007_worker_tasks.sql
 supabase/migrations/0008_room_sidebar_history.sql
+supabase/migrations/0009_byok_api_keys.sql
 ```
 
 **⚠️ 不要跑 `0003`～`0006`。** 這四個檔案是專門給「已經在跑的舊資料庫」補的增量修正（訪客顯示名稱、房間建立權限、Realtime 註冊），
@@ -58,7 +59,11 @@ supabase/migrations/0008_room_sidebar_history.sql
 結尾已經有 `alter publication supabase_realtime add table ...`）。全新專案先跑過 `0001` 之後，如果再跑 `0006`，
 會因為 `alter publication ... add table` 沒有防重複的判斷式而直接報錯（`relation "messages" is already member of publication`）。
 這是這個 repo 目前 migration 檔案編號延續舊有增量修正史、但沒有特別標註哪些檔案只給舊資料庫用所造成的落差——README 的步驟 1 其實也只列了
-`0001`／`0002`／`0007`／`0008` 四個檔案，跟這裡是一致的，照這四個檔案執行即可。
+`0001`／`0002`／`0007`／`0008`／`0009` 五個檔案，跟這裡是一致的，照這五個檔案執行即可。
+
+`0009_byok_api_keys.sql` 會啟用 `supabase_vault` extension（多數 Supabase 專案預設已經有，`create extension if not exists`
+重跑安全）並建立使用者自己輸入 API key 用的資料表跟函式——這是後面「不需要使用者提供任何 AI 金鑰」的關鍵：
+每個使用者登入後自己到「設定」頁輸入自己的 key，部署者不用經手任何 AI 供應商的金鑰。
 
 有 Supabase MCP 工具就用跑 SQL 的那個工具，依序、一個檔案一個檔案送出；沒有的話用「對這個專案執行任意 SQL」的 Management API 端點（依查證結果調整呼叫方式）。不論哪種方式，都**一個檔案一個檔案**執行（不要把多個檔案串成一個大字串一次送出，失敗要能明確定位是哪一個），每一個檔案執行完，檢查回應沒有錯誤才繼續下一個。
 
@@ -72,7 +77,7 @@ supabase/migrations/0008_room_sidebar_history.sql
 如果 Auth 設定的 API 端點查證後發現目前確實無法用 API 改（或呼叫失敗），才退回人工：明確告訴使用者去 **Authentication → Sign In / Providers**，兩個開關各自要切成什麼狀態，一次講完不要分兩次問。
 
 ## 完成判斷
-- `0001`／`0002`／`0007` 三個 migration 都成功執行（可以額外用 SQL 查 `select count(*) from public.rooms` 之類簡單語句驗證資料表確實存在）
+- 五個 migration 都成功執行（可以額外用 SQL 查 `select count(*) from public.rooms` 之類簡單語句驗證資料表確實存在）
 - 拿得到 `project_ref`、`project_url`、`anon_key`
 
 把這三個值記在這次對話的工作記憶裡（不要寫進 repo），下一階段要用。

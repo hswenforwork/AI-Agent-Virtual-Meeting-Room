@@ -1,12 +1,17 @@
 // chat-dispatch：驗證訊息、依結構化 @mention 決定要啟動哪些代理，建立 agent_runs，
 // 再逐一觸發 agent-run。對應 docs/MVP規劃-v2.md 第 3.1 節第 4 點的點名路由邏輯：
 //   沒有 @：只有主管代理（is_supervisor=true，MVP 綁定 Claude）回覆
-//   有 @：只有被點名且 status=active 的供應商回覆，主管代理當輪不參與
+//   有 @：只有被點名的供應商回覆，主管代理當輪不參與
+// 對應 brainstorms/2026-09-22-user-api-key-settings.md Q1/Q3/Q5（BYOK）：
+//   代理是否可用不再看房間層級的 agents.status，改看「發這則訊息的使用者」
+//   自己有沒有設定該供應商的 API key；沒有的話不回覆，用 system 訊息提示去設定，
+//   不會退回任何部署者的全域金鑰。
 
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin, supabaseAsUser } from "../_shared/supabaseAdmin.ts";
 import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
+import { getUserProviderKey, type ProviderSlug } from "../_shared/vault.ts";
 
 const MAX_AGENT_RUNS_PER_MESSAGE = Number(Deno.env.get("MAX_AGENT_RUNS_PER_MESSAGE") ?? "4");
 const TITLE_MAX_OUTPUT_TOKENS = 30;
@@ -72,33 +77,51 @@ Deno.serve(async (req) => {
 
     let targetAgentIds = (mentions ?? []).map((m) => m.agent_id);
     const notices: string[] = [];
+    // 同一則訊息裡最多用到三種供應商，個別查一次 Vault、快取結果，避免重複呼叫。
+    const keyCache = new Map<ProviderSlug, boolean>();
+    async function senderHasKey(provider: ProviderSlug): Promise<boolean> {
+      if (!keyCache.has(provider)) {
+        const key = await getUserProviderKey(admin, user.id, provider);
+        keyCache.set(provider, !!key);
+      }
+      return keyCache.get(provider)!;
+    }
 
     if (targetAgentIds.length === 0) {
       const { data: supervisor } = await admin
         .from("agents")
-        .select("id")
+        .select("id, name, provider")
         .eq("room_id", message.room_id)
         .eq("is_supervisor", true)
-        .eq("status", "active")
         .maybeSingle();
-      if (supervisor) targetAgentIds = [supervisor.id];
+      if (supervisor) {
+        const hasKey = await senderHasKey(supervisor.provider as ProviderSlug);
+        if (hasKey) {
+          targetAgentIds = [supervisor.id];
+        } else {
+          notices.push(`尚未設定 ${supervisor.name} 的 API key，請先到「設定」頁輸入後再試一次。`);
+        }
+      }
     } else {
       const { data: targetAgents } = await admin
         .from("agents")
-        .select("id, name, status")
+        .select("id, name, provider")
         .in("id", targetAgentIds);
 
-      const activeIds = new Set(
-        (targetAgents ?? []).filter((a) => a.status === "active").map((a) => a.id),
-      );
-      const inactiveNames = (targetAgents ?? [])
-        .filter((a) => a.status !== "active")
-        .map((a) => a.name);
-
-      if (inactiveNames.length > 0) {
-        notices.push(`${inactiveNames.join("、")} 尚未啟用（尚未設定 API key），暫時無法回覆。`);
+      const availableIds = new Set<string>();
+      const noKeyNames: string[] = [];
+      for (const agent of targetAgents ?? []) {
+        if (await senderHasKey(agent.provider as ProviderSlug)) {
+          availableIds.add(agent.id);
+        } else {
+          noKeyNames.push(agent.name);
+        }
       }
-      targetAgentIds = targetAgentIds.filter((id) => activeIds.has(id));
+
+      if (noKeyNames.length > 0) {
+        notices.push(`${noKeyNames.join("、")} 需要你自己的 API key 才能回覆，請先到「設定」頁輸入。`);
+      }
+      targetAgentIds = targetAgentIds.filter((id) => availableIds.has(id));
     }
 
     if (targetAgentIds.length > MAX_AGENT_RUNS_PER_MESSAGE) {
@@ -164,7 +187,7 @@ Deno.serve(async (req) => {
 
     if (shouldGenerateTitle) {
       // deno-lint-ignore no-undef
-      EdgeRuntime.waitUntil(generateRoomTitle(admin, message.room_id, message.content));
+      EdgeRuntime.waitUntil(generateRoomTitle(admin, user.id, message.room_id, message.content));
     }
 
     return new Response(JSON.stringify({ runIds }), { headers });
@@ -176,11 +199,14 @@ Deno.serve(async (req) => {
 
 async function generateRoomTitle(
   admin: ReturnType<typeof supabaseAdmin>,
+  userId: string,
   roomId: string,
   firstMessageContent: string,
 ) {
   try {
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+    // 房間標題是錦上添花的功能，用發第一則訊息的使用者自己的 Anthropic key；
+    // 沒設定就略過，房間名稱維持預設的「新對話」，不影響聊天本身。
+    const apiKey = await getUserProviderKey(admin, userId, "anthropic");
     if (!apiKey) return;
 
     const provider = createAnthropicProvider(apiKey);

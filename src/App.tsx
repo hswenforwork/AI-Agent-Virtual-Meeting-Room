@@ -4,6 +4,7 @@ import { ProtectedRoute } from "./features/auth/ProtectedRoute";
 import { AppLayout } from "./pages/AppLayout";
 import { WelcomePage } from "./pages/WelcomePage";
 import { RoomPage } from "./pages/RoomPage";
+import { SettingsPage } from "./pages/SettingsPage";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
       >
         <Route path="/" element={<WelcomePage />} />
         <Route path="/rooms/:roomId" element={<RoomPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   );

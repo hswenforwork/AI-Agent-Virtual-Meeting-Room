@@ -1,15 +1,9 @@
-import type { AIProvider, GenerateRequest, GenerateResult } from "./types.ts";
+import { ProviderHttpError, type AIProvider, type GenerateRequest, type GenerateResult } from "./types.ts";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
-export class ProviderHttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+export { ProviderHttpError };
 
 export function createAnthropicProvider(apiKey: string): AIProvider {
   return {

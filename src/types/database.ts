@@ -121,6 +121,14 @@ export interface ApprovalRequestRow {
   created_at: string;
 }
 
+export interface UserProviderKeyRow {
+  id: string;
+  user_id: string;
+  provider: "anthropic" | "openai" | "google";
+  updated_at: string;
+  created_at: string;
+}
+
 export interface UsageDailyRow {
   usage_date: string;
   room_id: string;

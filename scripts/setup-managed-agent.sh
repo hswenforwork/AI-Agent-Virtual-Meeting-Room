@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# 一次性設定腳本：建立「工作型代理」要用的 Managed Agents agent + environment。
+# ⚠️ 已過時：BYOK 上線後（brainstorms/2026-09-22-user-api-key-settings.md Q9/Q10），
+# 每個使用者第一次按「開始執行」時，worker-task-start 這個 Edge Function 會自動用該
+# 使用者自己的 Anthropic key 建立專屬的 agent/environment（邏輯見
+# supabase/functions/_shared/managedAgents.ts 的 createManagedAgent()/createManagedEnvironment()，
+# 跟這支腳本的建立邏輯一致），不再需要部署者手動執行這支腳本或設定
+# MANAGED_AGENTS_AGENT_ID／MANAGED_AGENTS_ENVIRONMENT_ID 這兩個全域 secrets。
+# 留著只是給想了解底層 API 呼叫長怎樣的人參考。
+#
+# ---- 以下是舊版一次性設定腳本，建立「工作型代理」要用的 Managed Agents agent + environment ----
 # 對應 brainstorms/2026-09-18-agentic-sandbox-workers.md Q4（架構修正：改用 Managed Agents）。
 #
 # 用法：

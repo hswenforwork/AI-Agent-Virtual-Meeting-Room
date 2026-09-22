@@ -67,19 +67,25 @@ Supabase MCP 工具是加分項，不是前置條件——有就用，沒有就�
 | 1 | `references/01-fork-repo.md` | Fork repo 到使用者帳號下 | AI（GitHub API） |
 | 2 | `references/02-supabase-project.md` | 建立 Supabase 專案、跑 3 個 migration | AI 優先（Supabase MCP，其次 Management API curl），都拿不到才退化成引導使用者手動貼 SQL |
 | 3 | `references/03-github-config.md` | 設定 GitHub repo 的 Variables/Secrets、開 Pages | AI（GitHub API），Pages 來源切換視 API 支援情況 |
-| 4 | `references/04-edge-function-secrets.md` | 設定 Supabase Edge Function 的 secrets（Anthropic key 等） | AI 優先（Supabase MCP，其次 Management API curl） |
+| 4 | `references/04-edge-function-secrets.md` | 設定 Supabase Edge Function 的 secrets（不需要使用者提供任何 AI 金鑰，BYOK 上線後金鑰是使用者自己的事） | AI 優先（Supabase MCP，其次 Management API curl），全程不需要使用者互動 |
 | 5 | `references/05-verify-basic-deploy.md` | 確認三個 GitHub Actions 都跑綠、請使用者實際打開網站測試 | AI 查狀態 + 使用者最後手動驗收 |
-| 6 | `references/06-managed-agents.md` | 「工作型代理」完整設定（Managed Agents beta、Gemini 求助、GitHub 存取） | 這關最依賴使用者帳號權限，AI 盡量自動、人工步驟本身要極簡化 |
-| 7 | `references/07-wrap-up.md` | 最終驗收、交付使用手冊 | AI 查狀態 + 使用者最後測試 |
+| 6 | `references/06-managed-agents.md` | （選用）讓工作型代理能修改專案自己的 GitHub repo | 只需要使用者選擇提供／跳過一組 GitHub token，不涉及任何 AI 供應商金鑰 |
+| 7 | `references/07-wrap-up.md` | 最終驗收、交付使用手冊（含提醒使用者自己到「設定」頁輸入 API key） | AI 查狀態 + 使用者最後測試 |
 
 參考資料：`references/troubleshooting.md`（這個專案過去踩過、跟「重新部署一份新的」還相關的坑）。
 
-**依序做完 1→7，不要跳過 6**（訪談 Q5：工作型代理跟基礎功能一起做完，不是選用附加項）。但 6 裡面「Managed Agents beta 權限」這個最不確定的關卡，安排在使用者已經有一個能用的聊天室之後才處理（訪談 Q6）——如果卡在等 Anthropic 審核，不影響使用者先用基礎功能。
+**依序做完 1→7。** BYOK 上線後（`brainstorms/2026-09-22-user-api-key-settings.md`），AI 供應商金鑰
+（Anthropic／OpenAI／Google）都是每個使用者自己登入後到「設定」頁輸入，不再是部署階段要處理的事；
+第 6 階段只剩「要不要讓工作型代理有權限修改這個專案自己的 repo」這個選用項目，跟 Managed Agents beta
+權限、Gemini 求助金鑰都無關（那些是使用者自己用網站時，系統會依使用者自己的金鑰自動處理）。
 
 ## 開始之前，跟使用者說的第一句話
 
 用類似這樣的話開場（依對話語氣調整，但意思要涵蓋）：
 
-> 我會把整個部署過程拆成幾個階段，大部分我自己就能做完，中間大概只有 4-6 次需要你去某個網站申請一組金鑰、複製貼給我——每一次我都會講清楚要去哪裡、點什麼。準備好了就開始第一步：把這個專案複製一份到你自己的 GitHub 帳號下。
+> 我會把整個部署過程拆成幾個階段，大部分我自己就能做完，中間大概只需要你去 GitHub 申請一兩組 token
+> 複製貼給我——每一次我都會講清楚要去哪裡、點什麼。網站上線後，你自己到「設定」頁輸入你自己的 AI API key
+> 就能開始跟 AI 聊天，不需要在部署過程中先準備好。準備好了就開始第一步：把這個專案複製一份到你自己的
+> GitHub 帳號下。
 
 然後開始 `references/01-fork-repo.md`。

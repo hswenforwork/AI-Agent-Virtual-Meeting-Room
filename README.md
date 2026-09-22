@@ -6,8 +6,9 @@
 - 完整規劃與設計決策：[`docs/MVP規劃-v2.md`](docs/MVP規劃-v2.md)
 - 原始訪談紀錄：[`brainstorms/2026-09-18-ai-agent-collab-room-mvp.md`](brainstorms/2026-09-18-ai-agent-collab-room-mvp.md)
 
-目前 MVP **只有 Claude（Anthropic API）真正可用**；GPT／Gemini 的介面已經留好，
-之後申請到 API key 再啟用即可，不需要改架構。
+Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定」頁輸入**自己的** API key
+即可啟用對應的代理，金鑰加密存放在 Supabase Vault，部署者不需要幫任何人代墊費用
+（設計見 [`brainstorms/2026-09-22-user-api-key-settings.md`](brainstorms/2026-09-22-user-api-key-settings.md)）。
 
 **想要一份自己的？** 如果你是用 Claude Code 連到這個 repo，直接請它「幫我部署這個工具」即可——
 它會自動叫用 [`.claude/skills/deploy-ai-collab-room`](.claude/skills/deploy-ai-collab-room/SKILL.md) 這個 Skill，
@@ -38,6 +39,7 @@
    - `supabase/migrations/0002_storage.sql`
    - `supabase/migrations/0007_worker_tasks.sql`（工作型代理／任務卡片，見下方「附加設定」）
    - `supabase/migrations/0008_room_sidebar_history.sql`（左側聊天室歷史清單，見下方「附加設定」）
+   - `supabase/migrations/0009_byok_api_keys.sql`（使用者自己輸入 API key，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -47,11 +49,14 @@
 到 Supabase Dashboard 的 **Edge Functions → Secrets**（或用 Supabase CLI `supabase secrets set`），設定：
 
 ```
-ANTHROPIC_API_KEY=你的 Anthropic API key（console.anthropic.com 申請）
 ALLOWED_ORIGINS=https://<你的 github 帳號>.github.io
 DEFAULT_CLAUDE_MODEL=claude-sonnet-5
 MAX_AGENT_RUNS_PER_MESSAGE=4
 ```
+
+`DEFAULT_GPT_MODEL`（預設 `gpt-5.1`）、`DEFAULT_GEMINI_MODEL`（預設 `gemini-2.5-flash`）可選填，
+不填就用程式內的預設值。**不需要**設定 `ANTHROPIC_API_KEY`／`GEMINI_API_KEY` 這類全域 AI 金鑰——
+BYOK 上線後每個使用者在「設定」頁輸入自己的 key，部署者不用、也不會代墊任何 AI 費用。
 
 `SUPABASE_URL`、`SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY` 這三個是 Supabase 保留字，
 平台會自動注入給每個 Edge Function，**不能也不需要**手動設定（手動加會直接被擋下，
@@ -64,36 +69,28 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 [`brainstorms/2026-09-18-agentic-sandbox-workers.md`](brainstorms/2026-09-18-agentic-sandbox-workers.md)）。
 這部分底層是 Anthropic 的 **Managed Agents（CMA，目前是 beta）**，需要額外一次性設定：
 
-1. **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
-   `supabase/migrations/0007_worker_tasks.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
-2. 確認你的 `ANTHROPIC_API_KEY` 有 Managed Agents（CMA）beta 權限（跟平常聊天用的 Messages API 是同一把 key，
-   但 Managed Agents 目前是 beta 功能，需要帳號開通）。
-3. 在**你自己的電腦或 Codespaces**（不是 Edge Function 環境）執行一次設定腳本，建立可重複使用的
-   agent／environment 設定：
-   ```bash
-   export ANTHROPIC_API_KEY="你的 key"
-   ./scripts/setup-managed-agent.sh
-   ```
-   腳本執行完會印出 `agent_id` 跟 `environment_id`，照著印出的指令設定 Edge Function secrets：
-   ```
-   MANAGED_AGENTS_AGENT_ID=agent_xxx
-   MANAGED_AGENTS_ENVIRONMENT_ID=env_xxx
-   ```
-4. 如果要讓工作型代理修改**這個專案自己的 GitHub repo**（訪談 Q7：這個專案優先），再加兩個 secrets：
+1. **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，依序貼上並執行
+   `supabase/migrations/0007_worker_tasks.sql` 跟 `0009_byok_api_keys.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+2. 每個使用者要用工作型代理前，先到「設定」頁輸入**自己的** Anthropic API key（要有 Managed Agents／CMA
+   beta 權限，跟平常聊天用的 Messages API 是同一把 key，只是 Managed Agents 目前是 beta 功能，需要帳號開通）。
+   第一次按「開始執行」時，系統會自動用這把 key 建立這個使用者專屬的 Managed Agents agent／environment
+   並重複使用，**不需要**部署者手動跑設定腳本或設定任何全域 secrets
+   （設計見 [`brainstorms/2026-09-22-user-api-key-settings.md`](brainstorms/2026-09-22-user-api-key-settings.md) Q9/Q10；
+   舊版手動流程的 `scripts/setup-managed-agent.sh` 已經不需要再執行，留著只是給想了解底層 API 呼叫長怎樣的人參考）。
+3. 卡住時自動詢問 Gemini（訪談 Q1/Q2）用的也是該使用者自己在「設定」頁輸入的 Google API key，
+   沒設定的話不影響一般聊天／任務執行，只是代理卡住時求助不到人，會照自己的判斷繼續嘗試。
+4. 如果要讓工作型代理修改**這個專案自己的 GitHub repo**（訪談 Q7：這個專案優先），部署者加兩個
+   Edge Function secrets（這是專案層級的 GitHub 存取權限，跟使用者各自的 AI key 無關）：
    ```
    GITHUB_REPO_URL=https://github.com/<owner>/<repo>
    GITHUB_TOKEN=一個有這個 repo 存取權的 GitHub Personal Access Token
    GITHUB_REPO_BRANCH=要 checkout 的分支（選用，不填用預設分支）
    ```
-5. 卡住時要能自動詢問 Gemini（訪談 Q1/Q2），再加：
-   ```
-   GEMINI_API_KEY=你的 Gemini 免費 API key（aistudio.google.com 申請）
-   ```
-   沒設定這個也不影響一般聊天／任務執行，只是代理卡住時求助不到人，會照自己的判斷繼續嘗試。
 
 > ⚠️ 這個功能會讓代理在一個 Anthropic 代管的沙盒容器裡自主執行 bash／寫檔案等操作（`always_allow` 權限，
 > 不會逐步跳出來要你按確認），沒有硬性花費上限（訪談 Q5 決議先不設，用真實用量再校正）。
-> 部署前請自行評估你能接受的風險與花費範圍。
+> 每個使用者用的是自己的 key、自己的 Managed Agents 資源，花費也算在使用者自己的 Anthropic 帳號上；
+> 使用前請自行評估你能接受的風險與花費範圍。
 
 ### 附加設定：左側聊天室歷史清單（選用但建議）
 
@@ -103,6 +100,18 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0008_room_sidebar_history.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 這個 migration 會順便把既有房間目前的名稱／最後活動時間補上正確的值，不會覆蓋掉你已經取好的房間名稱。
+
+### 附加設定：使用者自己輸入 API key（選用但建議，讓 GPT／Gemini 真正能用）
+
+每個使用者到網頁右上角「設定」頁（`/settings`）輸入自己的 Anthropic／OpenAI／Google API key，
+就能點名對應的代理；金鑰會先被拿去對該供應商發一次最小額度的測試呼叫，成功才加密存進
+Supabase Vault，部署者跟其他使用者都看不到明碼（設計見
+[`brainstorms/2026-09-22-user-api-key-settings.md`](brainstorms/2026-09-22-user-api-key-settings.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0009_byok_api_keys.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+這個 migration 會啟用 `supabase_vault` extension、建立金鑰資料表，跟只授權給 service_role
+呼叫的加解密函式，不需要額外的 Dashboard 設定。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
@@ -148,7 +157,8 @@ npx supabase@latest functions deploy worker-task-start
 ### 步驟 6：註冊帳號、開始使用
 
 打開部署好的網址，註冊一個帳號即可。第一次登入會自動建立一間「我的協作室」，
-裡面已經有三個代理：`Claude`（啟用中）、`GPT`、`Gemini`（尚未啟用，等你申請好對應 API key 再串接）。
+裡面已經有三個代理：`Claude`、`GPT`、`Gemini`；先到右上角「設定」頁輸入你自己對應供應商的
+API key，才能點名該代理（見上方「附加設定：使用者自己輸入 API key」）。
 
 **Email 登入的兩個小地雷：**
 
