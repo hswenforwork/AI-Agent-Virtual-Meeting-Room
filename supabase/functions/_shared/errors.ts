@@ -6,7 +6,7 @@ export type FriendlyError = {
   message: string;
 };
 
-export function friendlyAnthropicError(status: number): FriendlyError {
+export function friendlyProviderError(status: number): FriendlyError {
   if (status === 401 || status === 403) {
     return { code: "provider_auth_failed", message: "AI 供應商金鑰設定有誤，請聯絡管理員。" };
   }

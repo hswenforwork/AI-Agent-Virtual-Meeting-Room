@@ -36,6 +36,69 @@ async function cmaFetch(apiKey: string, path: string, init: RequestInit) {
   return res;
 }
 
+// 對應 brainstorms/2026-09-22-user-api-key-settings.md Q9/Q10：Managed Agents 的
+// agent／environment 綁定建立時所用的 Anthropic 帳號，每個使用者第一次觸發工作型代理時
+// 要用自己的金鑰建立一份專屬的，不能繼續共用部署者當初手動跑 scripts/setup-managed-agent.sh
+// 建好的那一套。這兩個函式把該腳本的建立邏輯原封不動搬進程式碼執行。
+
+export interface CreateEnvironmentResult {
+  id: string;
+}
+
+export async function createManagedEnvironment(apiKey: string): Promise<CreateEnvironmentResult> {
+  const res = await cmaFetch(apiKey, "/environments", {
+    method: "POST",
+    headers: cmaHeaders(apiKey),
+    body: JSON.stringify({
+      name: "ai-collab-room-worker-env",
+      config: {
+        type: "cloud",
+        networking: { type: "unrestricted" },
+      },
+    }),
+  });
+  return await res.json();
+}
+
+export interface CreateAgentResult {
+  id: string;
+}
+
+export async function createManagedAgent(apiKey: string): Promise<CreateAgentResult> {
+  const res = await cmaFetch(apiKey, "/agents", {
+    method: "POST",
+    headers: cmaHeaders(apiKey),
+    body: JSON.stringify({
+      name: "AI 協作室工作型代理",
+      model: "claude-opus-5",
+      system:
+        "你是「AI 協作室」聊天室裡的工作型代理，負責實際動手完成使用者交辦的任務（寫程式、修 bug、整理/產生檔案、部署等）。完成後把最終產出的檔案寫到 /mnt/session/outputs/。若同一個問題已經嘗試修正 3 次以上仍然卡住，呼叫 consult_other_ai 工具求助另一位 AI，不需要等待使用者回應。全部完成後，最後一則訊息用「SUMMARY: 」開頭簡短總結成果。",
+      tools: [
+        {
+          type: "agent_toolset_20260401",
+          default_config: { permission_policy: { type: "always_allow" } },
+        },
+        {
+          type: "custom",
+          name: "consult_other_ai",
+          description:
+            "當你卡住、同一個問題已經嘗試修正 3 次以上仍無法解決時，呼叫這個工具，提供完整的問題描述、已嘗試過的方法、錯誤訊息，向另一位 AI（Gemini）求助分析與建議。",
+          input_schema: {
+            type: "object",
+            properties: {
+              problem_description: { type: "string", description: "卡住的問題完整描述" },
+              attempted_solutions: { type: "string", description: "已經嘗試過的解法" },
+              error_details: { type: "string", description: "遇到的錯誤訊息或現象" },
+            },
+            required: ["problem_description", "attempted_solutions", "error_details"],
+          },
+        },
+      ],
+    }),
+  });
+  return await res.json();
+}
+
 export interface CreateSessionOptions {
   apiKey: string;
   agentId: string;

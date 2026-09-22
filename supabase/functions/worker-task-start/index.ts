@@ -2,6 +2,9 @@
 // 建立 Managed Agents（CMA）session，並在背景（EdgeRuntime.waitUntil）持續收事件串流、
 // 更新任務卡片、處理「卡住求助其他 AI」的自訂工具呼叫、任務結束後把產出檔案歸檔。
 // 對應 brainstorms/2026-09-18-agentic-sandbox-workers.md Q2/Q4/Q6/Q7/Q8/Q9/Q10。
+// 對應 brainstorms/2026-09-22-user-api-key-settings.md Q9/Q10（BYOK）：
+//   用按下「開始執行」這個使用者自己的 Anthropic key，第一次用時自動建立他專屬的
+//   Managed Agents agent/environment；consult_other_ai 求助用的也是他自己的 Google key。
 
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { jsonError } from "../_shared/errors.ts";
@@ -17,12 +20,15 @@ import {
   type CmaEvent,
 } from "../_shared/managedAgents.ts";
 import { consultGemini } from "../_shared/providers/gemini.ts";
+import { getUserProviderKey } from "../_shared/vault.ts";
+import { getOrCreateUserManagedAgent } from "../_shared/userManagedAgents.ts";
 
 type AdminClient = ReturnType<typeof supabaseAdmin>;
 
 // 代理的系統提示詞（角色設定、SUMMARY: 開頭慣例、consult_other_ai 使用時機）
-// 是 agent 設定本身的一部分，建立一次、可重複使用 —— 定義在 scripts/setup-managed-agent.sh，
-// 不是每次 session 都重送，這裡只需要知道工具名稱本身。
+// 是 agent 設定本身的一部分，建立一次、可重複使用 —— 定義在 _shared/managedAgents.ts
+// 的 createManagedAgent()，每個使用者第一次用時建立一次，不是每次 session 都重送，
+// 這裡只需要知道工具名稱本身。
 const CONSULT_TOOL_NAME = "consult_other_ai";
 const PROGRESS_LOG_MAX_ENTRIES = 6;
 
@@ -66,16 +72,28 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: false, error: { code: "already_started", message: "這個任務已經開始執行過了。" } }), { headers });
     }
 
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    const agentId = Deno.env.get("MANAGED_AGENTS_AGENT_ID");
-    const environmentId = Deno.env.get("MANAGED_AGENTS_ENVIRONMENT_ID");
-    if (!apiKey || !agentId || !environmentId) {
-      await failTask(
-        admin,
-        workerTask,
-        "尚未完成工作型代理的後台設定（Managed Agents agent/environment），請聯絡管理員依 README 設定。",
+    const apiKey = await getUserProviderKey(admin, user.id, "anthropic");
+    if (!apiKey) {
+      await failTask(admin, workerTask, "請先到「設定」頁輸入你自己的 Anthropic API key 後再試一次。");
+      return new Response(
+        JSON.stringify({ ok: false, error: { code: "missing_api_key", message: "尚未設定 Anthropic API key" } }),
+        { headers },
       );
-      return new Response(JSON.stringify({ ok: false, error: { code: "not_configured", message: "工作型代理尚未設定完成" } }), { headers });
+    }
+
+    let agentId: string;
+    let environmentId: string;
+    try {
+      const resources = await getOrCreateUserManagedAgent(admin, user.id, apiKey);
+      agentId = resources.agentId;
+      environmentId = resources.environmentId;
+    } catch (err) {
+      console.error("建立使用者專屬 Managed Agents 資源失敗", user.id, err);
+      await failTask(admin, workerTask, "建立你專屬的工作型代理環境失敗，請稍後重試。");
+      return new Response(
+        JSON.stringify({ ok: false, error: { code: "resource_create_failed", message: "建立工作型代理環境失敗" } }),
+        { headers },
+      );
     }
 
     const { data: originMessage } = await admin
@@ -116,7 +134,7 @@ Deno.serve(async (req) => {
         .eq("id", workerTask.task_card_message_id);
     }
 
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
+    const geminiApiKey = await getUserProviderKey(admin, user.id, "google");
     const consumeSession = () =>
       runSessionToCompletion(admin, apiKey, geminiApiKey, {
         sessionId: session.id,
@@ -168,7 +186,7 @@ interface SessionContext {
 async function runSessionToCompletion(
   admin: AdminClient,
   apiKey: string,
-  geminiApiKey: string | undefined,
+  geminiApiKey: string | null,
   ctx: SessionContext,
 ) {
   const progressLog: string[] = [];
@@ -231,7 +249,7 @@ async function runSessionToCompletion(
 async function handleConsultOtherAi(
   admin: AdminClient,
   apiKey: string,
-  geminiApiKey: string | undefined,
+  geminiApiKey: string | null,
   ctx: SessionContext,
   event: CmaEvent,
   pushProgress: (entry: string) => Promise<void>,
@@ -245,7 +263,7 @@ async function handleConsultOtherAi(
 
   let resultText: string;
   if (!geminiApiKey) {
-    resultText = "目前沒有設定可求助的其他 AI（GEMINI_API_KEY 未設定），請依自己的判斷繼續嘗試其他解法。";
+    resultText = "目前沒有設定可求助的其他 AI（尚未在「設定」頁輸入 Google API key），請依自己的判斷繼續嘗試其他解法。";
   } else {
     const prompt = [
       "另一個 AI 代理在執行程式開發任務時卡住了，請幫忙分析並給出具體建議。",

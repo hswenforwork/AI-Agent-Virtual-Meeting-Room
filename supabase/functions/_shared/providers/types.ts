@@ -1,5 +1,14 @@
 // Provider Adapter 介面（對應原始規劃文件 10.4 節與 docs/MVP規劃-v2.md 第 4 章）
-// MVP 只實作 anthropic.ts；openai.ts / google.ts 之後補上實作即可，呼叫端不需改動。
+// anthropic.ts / openai.ts / google.ts 三個供應商共用同一介面，呼叫端（agent-run）
+// 依 agent.provider 選對應的 create*Provider() 即可，不需要改動呼叫邏輯。
+
+export class ProviderHttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export type ChatRole = "user" | "assistant";
 
