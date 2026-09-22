@@ -13,18 +13,18 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { approvalId, decision } = await req.json();
     if (!approvalId || !["approved", "rejected"].includes(decision)) {
-      return jsonError("參數不正確", 400);
+      return jsonError("參數不正確", 400, headers);
     }
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
 
@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
       .select("id, room_id, tool_name, arguments_json, status")
       .eq("id", approvalId)
       .single();
-    if (approvalErr || !approval) return jsonError("找不到這個核准請求", 404, "not_found");
+    if (approvalErr || !approval) return jsonError("找不到這個核准請求", 404, "not_found", headers);
 
     const { data: membership } = await admin
       .from("room_members")
@@ -41,10 +41,10 @@ Deno.serve(async (req) => {
       .eq("room_id", approval.room_id)
       .eq("user_id", user.id)
       .maybeSingle();
-    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden");
+    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden", headers);
 
     if (approval.status !== "pending") {
-      return jsonError("這個請求已經處理過了", 409, "already_decided");
+      return jsonError("這個請求已經處理過了", 409, "already_decided", headers);
     }
 
     if (decision === "rejected") {
@@ -74,11 +74,11 @@ Deno.serve(async (req) => {
     } catch (execErr) {
       console.error("執行核准動作失敗", execErr);
       await admin.from("approval_requests").update({ status: "failed" }).eq("id", approvalId);
-      return jsonError("執行失敗，請稍後重試", 500, "execution_failed");
+      return jsonError("執行失敗，請稍後重試", 500, "execution_failed", headers);
     }
   } catch (err) {
     console.error("approval-decide 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
 

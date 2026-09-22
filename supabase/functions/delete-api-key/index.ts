@@ -14,16 +14,16 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { provider } = await req.json();
-    if (!PROVIDERS.includes(provider)) return jsonError("不支援的供應商", 400);
+    if (!PROVIDERS.includes(provider)) return jsonError("不支援的供應商", 400, headers);
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
     const { error: rpcErr } = await admin.rpc("delete_user_provider_key", {
@@ -32,12 +32,12 @@ Deno.serve(async (req) => {
     });
     if (rpcErr) {
       console.error("刪除 API key 失敗", user.id, provider, rpcErr);
-      return jsonError("刪除金鑰時發生錯誤，請稍後重試", 500, "internal_error");
+      return jsonError("刪除金鑰時發生錯誤，請稍後重試", 500, "internal_error", headers);
     }
 
     return new Response(JSON.stringify({ ok: true }), { headers });
   } catch (err) {
     console.error("delete-api-key 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });

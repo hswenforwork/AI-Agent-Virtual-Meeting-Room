@@ -37,17 +37,17 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { provider, apiKey } = await req.json();
-    if (!PROVIDERS.includes(provider)) return jsonError("不支援的供應商", 400);
-    if (typeof apiKey !== "string" || !apiKey.trim()) return jsonError("請輸入 API key", 400);
+    if (!PROVIDERS.includes(provider)) return jsonError("不支援的供應商", 400, headers);
+    if (typeof apiKey !== "string" || !apiKey.trim()) return jsonError("請輸入 API key", 400, headers);
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const trimmedKey = apiKey.trim();
     const { adapter, model } = providerFor(provider, trimmedKey);
@@ -62,10 +62,10 @@ Deno.serve(async (req) => {
     } catch (err) {
       if (err instanceof ProviderHttpError) {
         const friendly = friendlyProviderError(err.status);
-        return jsonError(friendly.message, 400, friendly.code);
+        return jsonError(friendly.message, 400, friendly.code, headers);
       }
       console.error("測試 API key 時發生未預期錯誤", provider, err);
-      return jsonError("測試金鑰時發生未預期錯誤，請稍後重試", 500, "internal_error");
+      return jsonError("測試金鑰時發生未預期錯誤，請稍後重試", 500, "internal_error", headers);
     }
 
     const admin = supabaseAdmin();
@@ -76,12 +76,12 @@ Deno.serve(async (req) => {
     });
     if (rpcErr) {
       console.error("寫入 API key 失敗", user.id, provider, rpcErr);
-      return jsonError("儲存金鑰時發生錯誤，請稍後重試", 500, "internal_error");
+      return jsonError("儲存金鑰時發生錯誤，請稍後重試", 500, "internal_error", headers);
     }
 
     return new Response(JSON.stringify({ ok: true }), { headers });
   } catch (err) {
     console.error("save-api-key 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });

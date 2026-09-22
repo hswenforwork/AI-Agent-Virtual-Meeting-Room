@@ -30,28 +30,28 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { roomId, objectPath, name, mimeType, sizeBytes } = await req.json();
     if (!roomId || !objectPath || !name || !mimeType || typeof sizeBytes !== "number") {
-      return jsonError("參數不正確", 400);
+      return jsonError("參數不正確", 400, headers);
     }
 
     if (sizeBytes > MAX_SIZE_BYTES) {
-      return jsonError("檔案超過 10MB 上限", 400, "file_too_large");
+      return jsonError("檔案超過 10MB 上限", 400, "file_too_large", headers);
     }
     if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-      return jsonError("不支援的檔案類型", 400, "unsupported_mime_type");
+      return jsonError("不支援的檔案類型", 400, "unsupported_mime_type", headers);
     }
     if (!objectPath.startsWith(`${roomId}/`)) {
-      return jsonError("檔案路徑不正確", 400, "invalid_path");
+      return jsonError("檔案路徑不正確", 400, "invalid_path", headers);
     }
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
 
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
       .eq("room_id", roomId)
       .eq("user_id", user.id)
       .maybeSingle();
-    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden");
+    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden", headers);
 
     const { data: file, error: insertErr } = await admin
       .from("files")
@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
 
     if (insertErr || !file) {
       console.error("登記檔案失敗", insertErr);
-      return jsonError("登記檔案失敗，請稍後重試", 500, "internal_error");
+      return jsonError("登記檔案失敗，請稍後重試", 500, "internal_error", headers);
     }
 
     if (TEXT_EXTRACTABLE_MIME_TYPES.has(mimeType)) {
@@ -89,7 +89,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ fileId: file.id }), { headers });
   } catch (err) {
     console.error("file-register 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
 

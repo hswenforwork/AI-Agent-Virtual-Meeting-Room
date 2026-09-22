@@ -40,16 +40,16 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return jsonError("未登入", 401, "unauthenticated");
+    if (!authHeader) return jsonError("未登入", 401, "unauthenticated", headers);
 
     const { workerTaskId } = await req.json();
-    if (!workerTaskId) return jsonError("缺少 workerTaskId", 400);
+    if (!workerTaskId) return jsonError("缺少 workerTaskId", 400, headers);
 
     const userClient = supabaseAsUser(authHeader);
     const {
       data: { user },
     } = await userClient.auth.getUser();
-    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated");
+    if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
 
@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
       .select("id, room_id, agent_id, origin_message_id, task_card_message_id, task_summary, status")
       .eq("id", workerTaskId)
       .single();
-    if (workerTaskErr || !workerTask) return jsonError("找不到這個任務", 404, "not_found");
+    if (workerTaskErr || !workerTask) return jsonError("找不到這個任務", 404, "not_found", headers);
 
     const { data: membership } = await admin
       .from("room_members")
@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
       .eq("room_id", workerTask.room_id)
       .eq("user_id", user.id)
       .maybeSingle();
-    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden");
+    if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden", headers);
 
     if (workerTask.status !== "pending_confirmation") {
       return new Response(JSON.stringify({ ok: false, error: { code: "already_started", message: "這個任務已經開始執行過了。" } }), { headers });
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true, sessionId: session.id }), { headers });
   } catch (err) {
     console.error("worker-task-start 未預期錯誤", err);
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
 

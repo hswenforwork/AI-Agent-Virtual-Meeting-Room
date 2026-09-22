@@ -83,7 +83,7 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get("authorization") ?? "";
   const expected = `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`;
   if (authHeader !== expected) {
-    return jsonError("此函式僅供內部呼叫", 403, "forbidden");
+    return jsonError("此函式僅供內部呼叫", 403, "forbidden", headers);
   }
 
   const admin = supabaseAdmin();
@@ -92,14 +92,14 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     runId = body?.runId;
-    if (!runId) return jsonError("缺少 runId", 400);
+    if (!runId) return jsonError("缺少 runId", 400, headers);
 
     const { data: run, error: runErr } = await admin
       .from("agent_runs")
       .select("id, room_id, agent_id, trigger_message_id, status")
       .eq("id", runId)
       .single();
-    if (runErr || !run) return jsonError("找不到這個 run", 404, "not_found");
+    if (runErr || !run) return jsonError("找不到這個 run", 404, "not_found", headers);
     if (run.status !== "queued") {
       return new Response(JSON.stringify({ skipped: true }), { headers });
     }
@@ -274,7 +274,7 @@ Deno.serve(async (req) => {
       }
       return new Response(JSON.stringify({ ok: false, error: friendly }), { headers, status: 200 });
     }
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
+    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
 
