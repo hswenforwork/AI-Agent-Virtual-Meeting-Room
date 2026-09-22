@@ -1,6 +1,6 @@
 # 左側聊天室歷史清單：腦力激盪／探索紀錄
 日期：2026-09-22 · 目標：設計「左側欄位歷史對話聊天室清單」功能，含新增、關閉、刪除聊天室，問清楚需求再動手
-狀態：進行中
+狀態：完成，已實作
 背景來源：
 - `src/features/rooms/RoomGate.tsx`、`src/features/rooms/useRooms.ts`：目前完全沒有房間清單 UI，登入後沒有房間就自動建一間「我的協作室」，有房間就直接進第一間，使用者從來沒看過房間列表
 - `src/pages/RoomPage.tsx`：目前版面是「頂部 header + 左邊聊天 + 右邊記事本/待辦/檔案分頁」，還沒有左側欄位
@@ -71,3 +71,10 @@
 - 影響：行為完全統一，不用分「全新帳號」跟「已有房間但沒選」兩種情況——`RoomGate.tsx` 的自動建立邏輯整個移除，不管有沒有房間，登入後一律顯示空白歡迎頁，由使用者自己按「＋新對話」開始。這也代表原本「沒有房間清單選擇畫面」的 MVP 設計（訪談 Q7：使用範圍主要自己一個人用）正式被這次的多房間歷史清單取代。
 
 ## 待釐清事項
+（無，訪談完成）
+
+## 成果
+- Migration：`supabase/migrations/0008_room_sidebar_history.sql`（`archived_at`／`last_message_at`／`title_generated` 欄位、last_message_at 觸發器、rooms 加入 Realtime publication）
+- 後端：`supabase/functions/chat-dispatch/index.ts` 新增房間第一則訊息觸發的 AI 自動標題產生
+- 前端：`src/features/rooms/{useRooms,RoomSidebar,RoomListItem,DeleteRoomDialog}.tsx`、`src/pages/{AppLayout,WelcomePage}.tsx`，移除 `RoomGate.tsx`，`RoomPage.tsx` 加上手機版漢堡選單與房間名稱顯示
+- README／`deploy-ai-collab-room` skill 的 migration 清單同步更新為 4 個檔案

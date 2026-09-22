@@ -44,12 +44,13 @@
 3. 輪詢 `GET /v1/projects/{ref}` 直到狀態變成健康／可用（依實際回應欄位判斷，常見會是類似 `ACTIVE_HEALTHY` 這種值），通常需要等 1-2 分鐘，不要低於 10 秒的頻率狂打。
 4. 專案就緒後，查該專案的 API 金鑰端點拿到 `anon` public key（前端要用），組出 `project_url = https://<ref>.supabase.co`。
 
-## 依序執行 migration —— 全新專案只需要 3 個檔案，不是全部 7 個
+## 依序執行 migration —— 全新專案只需要 4 個檔案，不是全部照編號跑
 
 ```
 supabase/migrations/0001_init.sql
 supabase/migrations/0002_storage.sql
 supabase/migrations/0007_worker_tasks.sql
+supabase/migrations/0008_room_sidebar_history.sql
 ```
 
 **⚠️ 不要跑 `0003`～`0006`。** 這四個檔案是專門給「已經在跑的舊資料庫」補的增量修正（訪客顯示名稱、房間建立權限、Realtime 註冊），
@@ -57,7 +58,7 @@ supabase/migrations/0007_worker_tasks.sql
 結尾已經有 `alter publication supabase_realtime add table ...`）。全新專案先跑過 `0001` 之後，如果再跑 `0006`，
 會因為 `alter publication ... add table` 沒有防重複的判斷式而直接報錯（`relation "messages" is already member of publication`）。
 這是這個 repo 目前 migration 檔案編號延續舊有增量修正史、但沒有特別標註哪些檔案只給舊資料庫用所造成的落差——README 的步驟 1 其實也只列了
-`0001`／`0002`／`0007` 三個檔案，跟這裡是一致的，照這三個檔案執行即可。
+`0001`／`0002`／`0007`／`0008` 四個檔案，跟這裡是一致的，照這四個檔案執行即可。
 
 有 Supabase MCP 工具就用跑 SQL 的那個工具，依序、一個檔案一個檔案送出；沒有的話用「對這個專案執行任意 SQL」的 Management API 端點（依查證結果調整呼叫方式）。不論哪種方式，都**一個檔案一個檔案**執行（不要把多個檔案串成一個大字串一次送出，失敗要能明確定位是哪一個），每一個檔案執行完，檢查回應沒有錯誤才繼續下一個。
 

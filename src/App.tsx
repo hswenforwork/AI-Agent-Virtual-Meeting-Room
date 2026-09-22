@@ -1,7 +1,8 @@
 import { Routes, Route } from "react-router-dom";
 import { LoginPage } from "./features/auth/LoginPage";
 import { ProtectedRoute } from "./features/auth/ProtectedRoute";
-import { RoomGate } from "./features/rooms/RoomGate";
+import { AppLayout } from "./pages/AppLayout";
+import { WelcomePage } from "./pages/WelcomePage";
 import { RoomPage } from "./pages/RoomPage";
 
 export default function App() {
@@ -9,21 +10,15 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route
-        path="/"
         element={
           <ProtectedRoute>
-            <RoomGate />
+            <AppLayout />
           </ProtectedRoute>
         }
-      />
-      <Route
-        path="/rooms/:roomId"
-        element={
-          <ProtectedRoute>
-            <RoomPage />
-          </ProtectedRoute>
-        }
-      />
+      >
+        <Route path="/" element={<WelcomePage />} />
+        <Route path="/rooms/:roomId" element={<RoomPage />} />
+      </Route>
     </Routes>
   );
 }

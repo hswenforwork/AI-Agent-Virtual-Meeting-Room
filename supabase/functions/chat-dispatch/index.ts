@@ -6,8 +6,13 @@
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin, supabaseAsUser } from "../_shared/supabaseAdmin.ts";
+import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
 
 const MAX_AGENT_RUNS_PER_MESSAGE = Number(Deno.env.get("MAX_AGENT_RUNS_PER_MESSAGE") ?? "4");
+const TITLE_MAX_OUTPUT_TOKENS = 30;
+const TITLE_MODEL = Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5";
+const TITLE_SYSTEM_PROMPT =
+  "你負責幫聊天室取一個 5-10 個字的精簡標題，只根據使用者這則訊息的主題來取，不要加任何標點符號、引號或「標題：」這類前綴，只回傳標題本身。";
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -32,7 +37,7 @@ Deno.serve(async (req) => {
 
     const { data: message, error: messageErr } = await admin
       .from("messages")
-      .select("id, room_id, sender_user_id, sender_type")
+      .select("id, room_id, sender_user_id, sender_type, content")
       .eq("id", messageId)
       .single();
 
@@ -48,6 +53,17 @@ Deno.serve(async (req) => {
       .eq("user_id", user.id)
       .maybeSingle();
     if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden");
+
+    // 房間第一則訊息：搶著把 title_generated 標記為 true 再產生標題（brainstorms/2026-09-22-room-sidebar-history.md Q4），
+    // 用「update ... where title_generated = false」當簡易的搶旗標機制，避免使用者連續送兩則訊息時重複觸發兩次標題產生。
+    const { data: claimedRoom } = await admin
+      .from("rooms")
+      .update({ title_generated: true })
+      .eq("id", message.room_id)
+      .eq("title_generated", false)
+      .select("id")
+      .maybeSingle();
+    const shouldGenerateTitle = !!claimedRoom;
 
     const { data: mentions } = await admin
       .from("message_mentions")
@@ -146,9 +162,41 @@ Deno.serve(async (req) => {
     // deno-lint-ignore no-undef
     EdgeRuntime.waitUntil(dispatchAgentRuns());
 
+    if (shouldGenerateTitle) {
+      // deno-lint-ignore no-undef
+      EdgeRuntime.waitUntil(generateRoomTitle(admin, message.room_id, message.content));
+    }
+
     return new Response(JSON.stringify({ runIds }), { headers });
   } catch (err) {
     console.error("chat-dispatch 未預期錯誤", err);
     return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error");
   }
 });
+
+async function generateRoomTitle(
+  admin: ReturnType<typeof supabaseAdmin>,
+  roomId: string,
+  firstMessageContent: string,
+) {
+  try {
+    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+    if (!apiKey) return;
+
+    const provider = createAnthropicProvider(apiKey);
+    const result = await provider.generate({
+      systemPrompt: TITLE_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: firstMessageContent }],
+      model: TITLE_MODEL,
+      maxOutputTokens: TITLE_MAX_OUTPUT_TOKENS,
+    });
+
+    const title = result.text.trim().replace(/^["「『]|["」』]$/g, "");
+    if (!title) return;
+
+    await admin.from("rooms").update({ name: title.slice(0, 80) }).eq("id", roomId);
+  } catch (err) {
+    // 標題產生失敗不影響聊天室本身可用性，房間名稱維持原本的「新對話」即可。
+    console.error("產生房間標題失敗", roomId, err);
+  }
+}

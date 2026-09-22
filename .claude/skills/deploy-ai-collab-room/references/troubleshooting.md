@@ -6,7 +6,7 @@
 | 症狀 | 原因 | 處理方式 |
 |---|---|---|
 | Supabase secrets 設定 `SUPABASE_URL`／`SUPABASE_ANON_KEY`／`SUPABASE_SERVICE_ROLE_KEY` 時報錯「Name must not start with the SUPABASE_ prefix」 | 這三個是 Supabase 保留字，平台會自動注入給每個 Edge Function，**本來就不能手動設定** | 不要設這三個，本來就不需要 |
-| 執行 `0006_enable_realtime.sql` 報錯「already member of publication」 | `0001_init.sql` 已經內含相同的 `alter publication` 語句，全新專案不該再跑 `0003`～`0006` | 全新部署只跑 `0001`／`0002`／`0007`，見 `02-supabase-project.md` |
+| 執行 `0006_enable_realtime.sql` 報錯「already member of publication」 | `0001_init.sql` 已經內含相同的 `alter publication` 語句，全新專案不該再跑 `0003`～`0006` | 全新部署只跑 `0001`／`0002`／`0007`／`0008`，見 `02-supabase-project.md` |
 | GitHub Pages 打開網站看到舊內容、404、或整頁空白 | Pages 的 Source 沒設成 **GitHub Actions**（還停在預設的 `Deploy from a branch`），這種情況下 Pages 是直接 serve repo 原始檔案，不是建置後的 `dist/` | 檢查 `https://github.com/<owner>/<repo>/settings/pages`，Source 要是 GitHub Actions；已經在 Phase 3 嘗試用 API 直接設定，失敗才需要人工檢查 |
 | 建立房間、發訊息出現「new row violates row-level security policy」 | `0001_init.sql` 目前的版本已經修好 owner_id 預設值與 SELECT 政策；如果還是遇到，代表跑的 `0001` 不是最新版，或中途手動改過 schema | 確認執行的是這個 repo 目前 `main` 分支上的 `0001_init.sql`，不是舊版快取 |
 | 訪客登入按鈕點了沒反應、或註冊後收不到驗證信 | Auth 設定的 **Confirm email** 沒關、**Anonymous Sign-ins** 沒開 | 見 `02-supabase-project.md` 的「打開兩個 Auth 設定」；Email 每小時限寄 2 封是 Supabase 免費方案的限制，不是 bug |

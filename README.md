@@ -37,6 +37,7 @@
    - `supabase/migrations/0001_init.sql`
    - `supabase/migrations/0002_storage.sql`
    - `supabase/migrations/0007_worker_tasks.sql`（工作型代理／任務卡片，見下方「附加設定」）
+   - `supabase/migrations/0008_room_sidebar_history.sql`（左側聊天室歷史清單，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -93,6 +94,15 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 > ⚠️ 這個功能會讓代理在一個 Anthropic 代管的沙盒容器裡自主執行 bash／寫檔案等操作（`always_allow` 權限，
 > 不會逐步跳出來要你按確認），沒有硬性花費上限（訪談 Q5 決議先不設，用真實用量再校正）。
 > 部署前請自行評估你能接受的風險與花費範圍。
+
+### 附加設定：左側聊天室歷史清單（選用但建議）
+
+左側會列出你所有的聊天室，支援新增、重新命名、關閉（封存）、永久刪除，新聊天室也會在第一則訊息送出後
+自動用 AI 取一個精簡標題（設計見 [`brainstorms/2026-09-22-room-sidebar-history.md`](brainstorms/2026-09-22-room-sidebar-history.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0008_room_sidebar_history.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+這個 migration 會順便把既有房間目前的名稱／最後活動時間補上正確的值，不會覆蓋掉你已經取好的房間名稱。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
