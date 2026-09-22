@@ -55,12 +55,12 @@ gh secret set SUPABASE_PROJECT_REF --repo "<target_owner>/<target_repo>" --body 
 Variables/Secrets/Pages 都設定好之後，用 `mcp__github__actions_run_trigger`（method: `run_workflow`）分別觸發：
 - `check.yml`
 - `deploy-pages.yml`
-- `deploy-functions.yml`（這個要等 Phase 4 的 Edge Function secrets 也設定好，Function 才有辦法正常運作，但先部署上去不會壞——沒有 `ANTHROPIC_API_KEY` 之前，代理只會回覆「尚未設定」，不影響其他功能）
+- `deploy-functions.yml`（這個要等 Phase 4 的 Edge Function secrets 也設定好，Function 才有辦法正常運作，但先部署上去不會壞——使用者自己還沒到「設定」頁輸入 API key 之前，代理只會回覆「請先設定 API key」，不影響其他功能）
 
 ## 完成判斷
 四個 Variables/Secrets 都查得到（GitHub API 可以確認「有沒有這個名字」但看不到 Secret 值本身，這是正常的）、Pages 設定為 `workflow` 來源、三個 workflow 都被觸發。
 
 ## 跟使用者說的話（範例）
-> GitHub 這邊也設定好了，我剛觸發了自動部署。接下來要設定後端用的金鑰（讓 AI 真的能回覆訊息），這步需要你去申請一把 Anthropic 的 API key。
+> GitHub 這邊也設定好了，我剛觸發了自動部署。接下來設定後端的環境變數，這步不需要你提供任何金鑰，我可以自己算好自己填。
 
 接著進入 `references/04-edge-function-secrets.md`。
