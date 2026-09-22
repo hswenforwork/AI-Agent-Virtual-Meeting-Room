@@ -26,6 +26,8 @@ jobs:
           supabase functions deploy approval-decide
           supabase functions deploy file-register
           supabase functions deploy worker-task-start
+          supabase functions deploy save-api-key
+          supabase functions deploy delete-api-key
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}

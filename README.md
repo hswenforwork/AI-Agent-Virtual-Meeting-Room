@@ -136,6 +136,8 @@ npx supabase@latest functions deploy agent-run
 npx supabase@latest functions deploy approval-decide
 npx supabase@latest functions deploy file-register
 npx supabase@latest functions deploy worker-task-start
+npx supabase@latest functions deploy save-api-key
+npx supabase@latest functions deploy delete-api-key
 ```
 
 （Codespaces 有時候會遇到 DNS 暫時連不出去的狀況，導致 `failed to bundle function`；
