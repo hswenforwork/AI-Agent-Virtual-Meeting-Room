@@ -37,3 +37,8 @@
 - 影響：範圍變大，要動兩個地方：
   1. `agent-run/index.ts`：現有的 `buildFileContext()` 旁邊要加對應的記事本／待辦事項讀取邏輯，一起塞進 system prompt（一般聊天路徑，Claude/GPT/Gemini 共用）
   2. `worker-task-start/index.ts`：建立 Managed Agents session 時的 `initialUserMessage`（目前只有「任務描述」+「使用者原始訊息」兩段）要多加一段記事本／待辦事項／檔案夾內容，讓工作型代理一開始就有這些上下文可以參考——工作型代理本身有檔案系統工具，理論上也能自己去讀房間檔案夾，但檔案目前是存在 Supabase Storage，不在 Managed Agents 的沙盒檔案系統裡，所以還是要用文字塞進初始訊息的方式，不能靠代理自己去讀檔案系統
+
+### Q5：待辦事項要給 AI 看到哪些狀態的？
+- 問題：(a) 只給還沒完成的（todo + in_progress）（建議） (b) 全部都給，包含已完成的
+- 已記錄：使用者選 **(a) 只給還沒完成的（todo + in_progress）**。
+- 影響：`tasks` 查詢加 `where status in ('todo', 'in_progress')`，`done` 的不進 context，避免房間累積很多已完成事項時把 context 灌爆。
