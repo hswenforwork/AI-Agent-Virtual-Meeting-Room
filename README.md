@@ -12,6 +12,10 @@
 **想要一份自己的？** 如果你是用 Claude Code 連到這個 repo，直接請它「幫我部署這個工具」即可——
 它會自動叫用 [`.claude/skills/deploy-ai-collab-room`](.claude/skills/deploy-ai-collab-room/SKILL.md) 這個 Skill，
 從 fork 專案、建立 Supabase、部署到 GitHub Pages，一路帶到工作型代理設定，不需要照著下面的手動步驟自己做。
+這個 Skill 會優先透過 repo 內建的 [`.mcp.json`](.mcp.json)（Supabase 官方 MCP Server）直接操作 Supabase，
+比自己組 API 呼叫更準確；要用到這個能力，先設定環境變數 `SUPABASE_ACCESS_TOKEN`（去
+[Supabase Personal Access Tokens](https://supabase.com/dashboard/account/tokens) 申請），
+第一次開啟這個 repo 時 Claude Code 會問要不要信任這個 MCP 設定，按同意即可；沒設定也沒關係，Skill 會自動退回手動呼叫 API。
 下面的手動步驟是給沒有用 Claude Code、想自己一步步照做的人看的。
 
 ---
@@ -93,7 +97,7 @@ MAX_AGENT_RUNS_PER_MESSAGE=4
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
 `.github/workflows/deploy-functions.yml` 已經設定好，只要 repo 有兩個 Secrets，push 到 `main`
-（或改到 `supabase/functions/` 底下的檔案）就會自動部署四個函式，**不需要 Codespaces、不需要終端機**：
+（或改到 `supabase/functions/` 底下的檔案）就會自動部署五個函式，**不需要 Codespaces、不需要終端機**：
 
 1. 到 [Supabase Dashboard → 帳號設定 → Access Tokens](https://supabase.com/dashboard/account/tokens)
    建立一個 **Personal Access Token**，複製起來。
@@ -112,6 +116,7 @@ npx supabase@latest functions deploy chat-dispatch
 npx supabase@latest functions deploy agent-run
 npx supabase@latest functions deploy approval-decide
 npx supabase@latest functions deploy file-register
+npx supabase@latest functions deploy worker-task-start
 ```
 
 （Codespaces 有時候會遇到 DNS 暫時連不出去的狀況，導致 `failed to bundle function`；
