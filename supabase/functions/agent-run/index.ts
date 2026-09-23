@@ -197,6 +197,10 @@ Deno.serve(async (req) => {
           origin_message_id: run.trigger_message_id,
           task_summary: classification.summary,
           status: "pending_confirmation",
+          // 工作型代理寫進記事本/待辦（brainstorms/2026-09-23-worker-agent-notebook-write.md
+          // 訪談 Q1）：只有使用者這則訊息明確要求記錄，才附帶新工具——worker-task-start
+          // 建立 session 時會讀這個欄位決定要不要用 agent_with_overrides 多附帶工具。
+          needs_notebook_tool: classification.needsNotebookTool,
         })
         .select("id")
         .single();
