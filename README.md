@@ -47,6 +47,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0014_conversation_summary.sql`（對話自動摘要，見下方「附加設定」）
    - `supabase/migrations/0015_agent_run_cancel.sql`（停止 AI 回覆，見下方「附加設定」）
    - `supabase/migrations/0016_message_token_usage.sql`（訊息泡泡顯示 token 用量，見下方「附加設定」）
+   - `supabase/migrations/0017_workspace_realtime.sql`（記事本/待辦/檔案夾即時更新，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -200,6 +201,15 @@ AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類�
 
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0016_message_token_usage.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：記事本／待辦事項／檔案夾即時更新（建議，修正 AI 新增內容後畫面不會自動更新的問題）
+
+AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登記進檔案夾）時，畫面現在會立刻
+顯示最新內容，不用再手動切到其他分頁再切回來才看得到（設計見
+[`brainstorms/2026-09-23-workspace-realtime-refresh.md`](brainstorms/2026-09-23-workspace-realtime-refresh.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0017_workspace_realtime.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 

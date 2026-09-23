@@ -3,7 +3,11 @@
 // brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1：檔案夾跨聊天室共用，
 // 不再依 room_id 篩選列表（RLS 已經把可見範圍限制在「使用者自己名下所有房間」）；
 // Storage 裡的實際檔案路徑仍然是 {room_id}/... 不變，下載連結不受影響（見 migration 說明）。
+// brainstorms/2026-09-23-workspace-realtime-refresh.md：比照 useNotes()，補上 Realtime
+// 訂閱——工作型代理執行完成後把產出檔案登記進 files 表（worker-task-start，用
+// service_role 寫入）時，前端才會立刻看到新檔案，不用切分頁再切回來。
 
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthProvider";
@@ -14,7 +18,10 @@ export interface FileWithRoom extends FileRow {
 }
 
 export function useFiles() {
-  return useQuery({
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
     queryKey: ["files"],
     queryFn: async (): Promise<FileWithRoom[]> => {
       const { data, error } = await supabase
@@ -29,6 +36,25 @@ export function useFiles() {
       }));
     },
   });
+
+  useEffect(() => {
+    if (!user) return;
+
+    const channel = supabase
+      .channel(`files-${user.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "files", filter: `owner_id=eq.${user.id}` },
+        () => queryClient.invalidateQueries({ queryKey: ["files"] }),
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, queryClient]);
+
+  return query;
 }
 
 function buildObjectPath(roomId: string, filename: string) {
