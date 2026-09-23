@@ -46,7 +46,10 @@ export function FilesPanel({ roomId }: { roomId: string }) {
   async function handleDelete(file: FileWithRoom) {
     if (!window.confirm(`確定要刪除「${file.name}」嗎？這是難復原的操作，需要再次確認。`)) return;
     try {
-      await requestDelete.mutateAsync({ fileId: file.id, roomId: file.room_id });
+      // 檔案的來源房間可能已經被刪除（room_id 變成 null，brainstorms/2026-09-23-gpt-audit-followups.md
+      // Q1），這種情況退回用「目前正在看的房間」，approval_requests.room_id 只用於稽核紀錄分類，
+      // 不影響審核本身的權限判斷（判斷依據是 requested_by）。
+      await requestDelete.mutateAsync({ fileId: file.id, roomId: file.room_id ?? roomId });
       toast.success("已刪除");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "刪除失敗");

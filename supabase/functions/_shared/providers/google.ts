@@ -1,10 +1,13 @@
 import {
   ProviderHttpError,
   type AIProvider,
+  type DocumentAttachment,
   type GenerateRequest,
   type GenerateResult,
   type ModelOption,
   type StreamUsage,
+  type ToolCall,
+  type ToolDefinition,
 } from "./types.ts";
 import { readSseStream } from "../sse.ts";
 
@@ -44,6 +47,56 @@ async function listGoogleModels(apiKey: string): Promise<ModelOption[]> {
   return models;
 }
 
+type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
+// PDF 走原生文件輸入（brainstorms/2026-09-23-gpt-audit-followups.md Q14/Q15）：inlineData
+// part 放在最後一則 user 訊息的 parts 最前面（純 base64，不是 data URL）。
+function buildGeminiContents(messages: GenerateRequest["messages"], documents?: DocumentAttachment[]) {
+  const built = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }] as GeminiPart[],
+  }));
+
+  if (!documents || documents.length === 0) return built;
+
+  const lastUserIndex = [...built].map((m) => m.role).lastIndexOf("user");
+  if (lastUserIndex === -1) return built;
+
+  const docParts: GeminiPart[] = documents.map((doc) => ({
+    inlineData: { mimeType: doc.mimeType, data: doc.base64 },
+  }));
+  built[lastUserIndex] = { role: "user", parts: [...docParts, ...built[lastUserIndex].parts] };
+  return built;
+}
+
+function buildGeminiTools(tools?: ToolDefinition[]) {
+  if (!tools || tools.length === 0) return undefined;
+  return [
+    {
+      functionDeclarations: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: {
+          type: "OBJECT",
+          properties: Object.fromEntries(
+            Object.entries(t.parameters.properties).map(([key, prop]) => [
+              key,
+              { type: prop.type.toUpperCase(), description: prop.description, enum: prop.enum },
+            ]),
+          ),
+          required: t.parameters.required,
+        },
+      })),
+    },
+  ];
+}
+
+function extractGeminiToolCall(parts: { functionCall?: { name: string; args: Record<string, unknown> } }[]): ToolCall | undefined {
+  const withCall = parts.find((p) => p.functionCall);
+  if (!withCall?.functionCall) return undefined;
+  return { name: withCall.functionCall.name, input: withCall.functionCall.args ?? {} };
+}
+
 // Gemini 的多輪對話角色是 "user"/"model"（不是 "assistant"），systemInstruction
 // 是跟 contents 平行的獨立欄位，不是 contents 陣列裡的一則訊息。
 export function createGoogleProvider(apiKey: string): AIProvider {
@@ -57,10 +110,8 @@ export function createGoogleProvider(apiKey: string): AIProvider {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: request.systemPrompt }] },
-            contents: request.messages.map((m) => ({
-              role: m.role === "assistant" ? "model" : "user",
-              parts: [{ text: m.content }],
-            })),
+            contents: buildGeminiContents(request.messages, request.documents),
+            tools: buildGeminiTools(request.tools),
             generationConfig: { maxOutputTokens: request.maxOutputTokens },
           }),
         },
@@ -73,9 +124,11 @@ export function createGoogleProvider(apiKey: string): AIProvider {
       }
 
       const data = await res.json();
-      const text = (data.candidates?.[0]?.content?.parts ?? [])
-        .map((p: { text?: string }) => p.text ?? "")
-        .join("\n");
+      const parts = (data.candidates?.[0]?.content?.parts ?? []) as {
+        text?: string;
+        functionCall?: { name: string; args: Record<string, unknown> };
+      }[];
+      const text = parts.map((p) => p.text ?? "").join("\n");
 
       return {
         text,
@@ -83,6 +136,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
           inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
           outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
         },
+        toolCall: extractGeminiToolCall(parts),
       };
     },
     async generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage> {
@@ -93,10 +147,8 @@ export function createGoogleProvider(apiKey: string): AIProvider {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: request.systemPrompt }] },
-            contents: request.messages.map((m) => ({
-              role: m.role === "assistant" ? "model" : "user",
-              parts: [{ text: m.content }],
-            })),
+            contents: buildGeminiContents(request.messages, request.documents),
+            tools: buildGeminiTools(request.tools),
             generationConfig: { maxOutputTokens: request.maxOutputTokens },
           }),
         },
@@ -110,6 +162,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
 
       let inputTokens = 0;
       let outputTokens = 0;
+      let toolCall: ToolCall | undefined;
 
       await readSseStream(res.body, (raw) => {
         let data: Record<string, unknown>;
@@ -119,10 +172,13 @@ export function createGoogleProvider(apiKey: string): AIProvider {
           return;
         }
 
-        const candidates = data.candidates as { content?: { parts?: { text?: string }[] } }[] | undefined;
+        const candidates = data.candidates as
+          | { content?: { parts?: { text?: string; functionCall?: { name: string; args: Record<string, unknown> } }[] } }[]
+          | undefined;
         const parts = candidates?.[0]?.content?.parts ?? [];
         const text = parts.map((p) => p.text ?? "").join("");
         if (text) onDelta(text);
+        if (!toolCall) toolCall = extractGeminiToolCall(parts);
 
         // usageMetadata 每一包都會帶，但數字是累計值（不是逐段增量），取最後一次收到的就好
         const usageMetadata = data.usageMetadata as
@@ -134,7 +190,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
         }
       });
 
-      return { usage: { inputTokens, outputTokens } };
+      return { usage: { inputTokens, outputTokens }, toolCall };
     },
   };
 }

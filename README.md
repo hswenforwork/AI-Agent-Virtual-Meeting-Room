@@ -42,6 +42,9 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0009_byok_api_keys.sql`（使用者自己輸入 API key，見下方「附加設定」）
    - `supabase/migrations/0010_provider_model_selection.sql`（使用者選擇模型，見下方「附加設定」）
    - `supabase/migrations/0011_shared_workspace.sql`（記事本／待辦事項／檔案夾跨聊天室共用，見下方「附加設定」）
+   - `supabase/migrations/0012_workspace_owner_id.sql`（記事本／待辦事項／檔案夾徹底跟房間解耦，見下方「附加設定」）
+   - `supabase/migrations/0013_agent_collaboration.sql`（代理互相協作，見下方「附加設定」）
+   - `supabase/migrations/0014_conversation_summary.sql`（對話自動摘要，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -139,6 +142,42 @@ AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類�
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0011_shared_workspace.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 這個 migration 只改 RLS 政策，不搬動任何既有資料、也不改欄位，上傳過的檔案不受影響。
+
+### 附加設定：記事本／待辦事項／檔案夾徹底跟房間解耦（建議，修正刪除房間會連帶刪掉共用資料的問題）
+
+`0011` 只是放寬「誰看得到」的權限，資料本身仍然掛在某個房間下、跟著房間一起被刪除；這個 migration
+新增 `owner_id` 欄位當真正的歸屬，`room_id` 降級成「來源房間」的參考欄位（房間被刪除時會自動變成
+空值，不會連帶刪掉記事本／待辦事項／檔案夾本身）。既有資料會自動回填 `owner_id`，不用手動搬移
+（設計見 [`brainstorms/2026-09-23-gpt-audit-followups.md`](brainstorms/2026-09-23-gpt-audit-followups.md) Q1）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0012_workspace_owner_id.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：代理互相協作（選用但建議）
+
+點名的代理現在會**平行**回覆，不再依序等待、也不會看到同時被點名的其他代理的答案（符合「各自獨立
+回答、平行並排顯示」的設計初衷）。此外，任何一則回覆（不分有沒有被使用者明確點名）都能用 AI 原生
+的 tool use 判斷「這個問題交給另一位供應商的代理回答更合適」，自動把它拉進對話——它的回答會獨立
+顯示成一則新訊息，同一則使用者訊息最多接力一次，不會無限循環。這個功能只在你自己有設定超過一家
+供應商的 API key 時才會出現（沒有其他家的 key 就不會附帶這個能力，設計見
+[`brainstorms/2026-09-23-gpt-audit-followups.md`](brainstorms/2026-09-23-gpt-audit-followups.md) Q2-Q8）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0013_agent_collaboration.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：對話自動摘要（選用但建議）
+
+每個聊天室的歷史訊息累積到一定數量後（AI 平常只看得到最近 24 則），較早的部分會自動被 AI 折進一份
+「對話摘要」存起來，之後組上下文時會一起帶入，讓 AI 不會完全忘記更早之前聊過什麼；摘要內容可以在
+右側欄位新增的「對話摘要」分頁查看。畫面上的聊天紀錄也補上「往上捲動載入更舊訊息」，不再固定卡在
+最新 200 則（設計見
+[`brainstorms/2026-09-23-gpt-audit-followups.md`](brainstorms/2026-09-23-gpt-audit-followups.md) Q10-Q13）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0014_conversation_summary.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+> 這三個附加設定牽涉到的 PDF 原生文件輸入（Anthropic／OpenAI／Google 各自的文件輸入格式）跟
+> DOCX/XLSX 文字擷取不需要額外的資料庫設定，Edge Functions 部署完就會生效。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 

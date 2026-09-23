@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { NotebookPen, ListTodo, Folder } from "lucide-react";
+import { NotebookPen, ListTodo, Folder, ScrollText } from "lucide-react";
 import { NotesPanel } from "../../features/notes/NotesPanel";
 import { TasksPanel } from "../../features/tasks/TasksPanel";
 import { FilesPanel } from "../../features/files/FilesPanel";
+import { SummaryPanel } from "../../features/summary/SummaryPanel";
 
-type Tab = "notes" | "tasks" | "files";
+type Tab = "notes" | "tasks" | "files" | "summary";
 
 const TABS: { key: Tab; label: string; icon: typeof NotebookPen }[] = [
   { key: "notes", label: "記事本", icon: NotebookPen },
   { key: "tasks", label: "待辦事項", icon: ListTodo },
   { key: "files", label: "檔案夾", icon: Folder },
+  { key: "summary", label: "對話摘要", icon: ScrollText },
 ];
 
 export function WorkspaceTabs({
@@ -68,6 +70,7 @@ export function WorkspaceTabs({
         {tab === "notes" && <NotesPanel roomId={roomId} />}
         {tab === "tasks" && <TasksPanel roomId={roomId} />}
         {tab === "files" && <FilesPanel roomId={roomId} />}
+        {tab === "summary" && <SummaryPanel roomId={roomId} />}
       </div>
     </div>
   );
