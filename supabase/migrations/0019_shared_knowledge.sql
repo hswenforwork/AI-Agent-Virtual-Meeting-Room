@@ -118,15 +118,28 @@ create trigger on_decision_validate_supersede
 -- 新決策帶 supersedes_id 時（已經通過上面的驗證），自動把「被取代的舊決策」標成 superseded
 -- 並回填 superseded_by_id；舊決策整列都還在（不是刪除、不是覆寫內容），只是狀態換了，
 -- 之後檢索（buildKnowledgeContext）只會把 active 的決策餵給模型。
+--
+-- PR #44 第三輪 review 修正：下面 enforce_decision_append_only() 現在連 status／
+-- superseded_by_id 都保護了，這裡執行的 UPDATE 也會經過那個 trigger——用一個交易層級的
+-- GUC（`app.decisions_supersede_update`）明確標記「這次 status／superseded_by_id 的變動
+-- 是我這個函式本身要做的合法操作」，讓 enforce_decision_append_only() 用這個明確旗標判斷，
+-- 不是用 pg_trigger_depth() 這種「剛好巢狀在某個 trigger 裡」的間接推定（這種推定沒辦法
+-- 保證「巢狀」一定等於「這個特定操作」，見下面 enforce_decision_append_only() 的說明）。
+-- set_config 的第三個參數 true＝only for this transaction，交易結束（commit／rollback）
+-- 就自動失效，不用另外清掉，也不會外洩給同一個連線之後處理的其他交易。
 create or replace function public.handle_decision_supersede()
 returns trigger
 language plpgsql
 as $$
 begin
   if new.supersedes_id is not null then
+    perform set_config('app.decisions_supersede_update', 'true', true);
     update public.decisions
     set status = 'superseded', superseded_by_id = new.id, updated_at = now()
     where id = new.supersedes_id and owner_id = new.owner_id and status = 'active';
+    -- 用完立刻關掉，把「允許」的視窗縮到只有這一個 UPDATE 陳述式，不留給同一筆交易裡
+    -- 後續（理論上）還有的其他陳述式可以搭便車。
+    perform set_config('app.decisions_supersede_update', 'false', true);
   end if;
   return new;
 end;
@@ -137,33 +150,50 @@ create trigger on_decision_supersede
   after insert on public.decisions
   for each row execute procedure public.handle_decision_supersede();
 
--- 「只追加」的最後一道防線：內容欄位一律不能被修改，決策不能被直接刪除——包含 service_role
--- （這裡故意不判斷呼叫者角色，任何人、任何管道都一樣）。只放行 handle_decision_supersede()
--- 這個 trigger 自己會做的那種更新（只改 status／superseded_by_id／updated_at）。
+-- 「只追加」的最後一道防線：內容欄位（含 status／superseded_by_id）一律不能被直接修改，
+-- 決策不能被直接刪除——包含 service_role（這裡故意不判斷呼叫者角色，任何人、任何管道都
+-- 一樣）。只放行兩種明確、經過驗證的系統內部操作，都不是用「巢狀在某個 trigger 裡」這種
+-- 間接、可能被其他未來程式路徑意外符合的訊號來判斷（PR #44 review 一路的教訓：先用
+-- pg_trigger_depth() > 1 判斷 DELETE 是不是合法級聯，但 reviewer 指出這只證明「巢狀在
+-- 某個 trigger 裡」，不保證「巢狀的原因就是帳號刪除」；同一版也完全沒保護 status／
+-- superseded_by_id，讓人可以繞過 validate_decision_supersede() 直接把一筆決策改成
+-- superseded，不必真的新增取代它的決策）：
 --
--- 兩個例外，都是刻意放行（PR #44 第二輪 review 修正，第一版的 trigger 會把這兩件事都擋住，
--- 是真正的 bug，不是「更嚴格比較安全」）：
---   1. source_room_id 允許被改成 null：這是來源房間的軟參照（on delete set null），房間被
+--   1. status／superseded_by_id 的變動：只有 handle_decision_supersede() 明確設定過
+--      `app.decisions_supersede_update` 這個交易層級旗標時才放行——這是它自己的內部操作，
+--      不是靠「這次更新剛好巢狀在某個 trigger 裡」去猜。使用者或任何其他程式路徑直接
+--      UPDATE 這兩個欄位，一律擋下。
+--   2. source_room_id 允許被改成 null：這是來源房間的軟參照（on delete set null），房間被
 --      刪除時 Postgres 會對 decisions 執行一次 UPDATE 把它設成 null——這個 UPDATE 也會經過
 --      這個 trigger，如果連這個都擋，刪除聊天室這個功能對「有建過決策」的房間會直接整個
 --      失敗（回傳外鍵/trigger 錯誤），使用者的刪除操作看起來像壞掉了。
---   2. DELETE：decisions.owner_id 是 on delete cascade 參照 profiles，使用者刪除自己帳號時
+--   3. DELETE：decisions.owner_id 是 on delete cascade 參照 profiles，使用者刪除自己帳號時
 --      Postgres 會對這個帳號名下所有決策執行級聯刪除——這個級聯刪除一樣會先觸發這個
 --      trigger，如果不放行，使用者只要建立過一筆決策，就永遠沒辦法刪除自己的帳號。
---      用 pg_trigger_depth()（目前這個 trigger 本身的執行就是深度 1）判斷：等於 1 代表是
---      有人直接對 decisions 下 DELETE（沒有任何外層 trigger context），這種一律擋下；
---      大於 1 代表這次刪除是從別的 trigger context 觸發的——在這個 schema 裡，會讓
---      decisions 被刪除的唯一 trigger 路徑就是 profiles 的級聯刪除，所以這裡放行。
+--      這裡沒辦法像上面 status／superseded_by_id 那樣插入自己的旗標（觸發級聯的是
+--      PostgreSQL 自己的外鍵機制，不是我們寫的函式），改用更貼近實際條件的判斷：這一列
+--      的 owner_id 在「這個交易當下」查得到對應的 profiles 列嗎？如果查不到，代表這個帳號
+--      正在（或已經）被刪除，這個刪除才合法放行；只要帳號還在，一律擋下，不管有沒有巢狀在
+--      別的 trigger 裡。額外用 pg_trigger_depth() > 1 當第二層佐證（一般使用者、
+--      service_role 都不可能巢狀在別的 trigger context 裡對 decisions 下 DELETE，除非真的
+--      是這種帳號刪除級聯），兩個條件都成立才放行，把「巢狀」跟「巢狀的原因」一起驗證，
+--      不是只看其中一個。
 create or replace function public.enforce_decision_append_only()
 returns trigger
 language plpgsql
 as $$
 begin
   if tg_op = 'DELETE' then
-    if pg_trigger_depth() > 1 then
+    if pg_trigger_depth() > 1 and not exists (select 1 from public.profiles where id = old.owner_id) then
       return old;
     end if;
     raise exception '決策紀錄只能新增，不能刪除；要調整請新增一筆決策並用 supersedes_id 指向這一筆';
+  end if;
+
+  if (old.status is distinct from new.status or old.superseded_by_id is distinct from new.superseded_by_id)
+    and coalesce(current_setting('app.decisions_supersede_update', true), 'false') <> 'true'
+  then
+    raise exception '決策的狀態只能透過新增一筆帶 supersedes_id 的決策來改變，不能直接修改';
   end if;
 
   if old.title is distinct from new.title
