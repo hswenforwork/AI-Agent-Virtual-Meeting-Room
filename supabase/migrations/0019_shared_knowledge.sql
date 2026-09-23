@@ -74,11 +74,49 @@ create policy "decisions_insert_own" on public.decisions
   for insert with check (owner_id = auth.uid());
 create policy "decisions_update_own" on public.decisions
   for update using (owner_id = auth.uid());
-create policy "decisions_delete_own" on public.decisions
-  for delete using (owner_id = auth.uid());
 
--- 新決策帶 supersedes_id 時，自動把「被取代的舊決策」標成 superseded 並回填
--- superseded_by_id；舊決策整列都還在（不是刪除、不是覆寫內容），只是狀態換了，
+-- 「只追加」（docs/AI-Partner借鏡對照.md 第 2 項）：決策不能被直接刪除，所以刻意不建立
+-- decisions_delete_own policy——沒有 delete policy，RLS 一律拒絕任何刪除請求。下面另外加
+-- enforce_decision_append_only() trigger 當最後一道防線（見該函式註解，連 service_role 都擋）。
+
+-- 取代前先驗證：目標決策要存在、屬於同一個帳號、而且目前還是 active，否則整筆新增決策的
+-- 操作直接失敗（PR #44 review：不能因為目標決策不符合條件就默默跳過取代，讓兩筆決策同時
+-- 都是 active）。用 for update 鎖住目標那一列，避免「同時對同一筆舊決策送出兩個取代」時
+-- 兩筆新決策都通過檢查、都宣稱自己取代了它（見 docs/共享知識系統-測試報告.md 的重複取代測試）。
+create or replace function public.validate_decision_supersede()
+returns trigger
+language plpgsql
+as $$
+declare
+  target public.decisions%rowtype;
+begin
+  if new.supersedes_id is not null then
+    if new.supersedes_id = new.id then
+      raise exception '決策不能取代自己';
+    end if;
+
+    select * into target from public.decisions where id = new.supersedes_id for update;
+    if target is null then
+      raise exception '找不到要取代的決策（id=%）', new.supersedes_id;
+    end if;
+    if target.owner_id <> new.owner_id then
+      raise exception '不能取代不屬於自己的決策';
+    end if;
+    if target.status <> 'active' then
+      raise exception '要取代的決策目前不是有效狀態（可能已經被其他決策取代，或本身就不是 active），請重新整理後選擇目前有效的版本';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_decision_validate_supersede on public.decisions;
+create trigger on_decision_validate_supersede
+  before insert on public.decisions
+  for each row execute procedure public.validate_decision_supersede();
+
+-- 新決策帶 supersedes_id 時（已經通過上面的驗證），自動把「被取代的舊決策」標成 superseded
+-- 並回填 superseded_by_id；舊決策整列都還在（不是刪除、不是覆寫內容），只是狀態換了，
 -- 之後檢索（buildKnowledgeContext）只會把 active 的決策餵給模型。
 create or replace function public.handle_decision_supersede()
 returns trigger
@@ -98,6 +136,41 @@ drop trigger if exists on_decision_supersede on public.decisions;
 create trigger on_decision_supersede
   after insert on public.decisions
   for each row execute procedure public.handle_decision_supersede();
+
+-- 「只追加」的最後一道防線：內容欄位一律不能被修改，決策一律不能被刪除——包含 service_role
+-- （這裡故意不判斷呼叫者角色，任何人、任何管道都一樣）。只放行 handle_decision_supersede()
+-- 這個 trigger 自己會做的那種更新（只改 status／superseded_by_id／updated_at）。
+create or replace function public.enforce_decision_append_only()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception '決策紀錄只能新增，不能刪除；要調整請新增一筆決策並用 supersedes_id 指向這一筆';
+  end if;
+
+  if old.title is distinct from new.title
+    or old.decision_text is distinct from new.decision_text
+    or old.reasoning is distinct from new.reasoning
+    or old.alternatives is distinct from new.alternatives
+    or old.decided_at is distinct from new.decided_at
+    or old.supersedes_id is distinct from new.supersedes_id
+    or old.source_room_id is distinct from new.source_room_id
+    or old.created_by is distinct from new.created_by
+    or old.owner_id is distinct from new.owner_id
+    or old.origin_proposal_id is distinct from new.origin_proposal_id
+  then
+    raise exception '決策內容不能修改；要調整請新增一筆決策並用 supersedes_id 指向這一筆';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_decision_append_only on public.decisions;
+create trigger on_decision_append_only
+  before update or delete on public.decisions
+  for each row execute procedure public.enforce_decision_append_only();
 
 -- ---------------------------------------------------------------------------
 -- knowledge_sources：來源索引，每則知識／決策連回聊天室訊息、記事、待辦、檔案或外部來源
@@ -374,6 +447,56 @@ create policy "knowledge_audit_reports_delete_own" on public.knowledge_audit_rep
   for delete using (owner_id = auth.uid());
 
 -- ---------------------------------------------------------------------------
+-- 來源訊息安全寫入：accept_knowledge_proposal() 的 'knowledge'／'decision' 分支共用。
+-- PR #44 review 修正：原本不管 source_message_id 是什麼都直接標 verified=true，等於沒有
+-- 真的核對內容就宣稱「已驗證」。這裡改成：先確認來源訊息確實存在、而且屬於這個提案本身的
+-- owner_id（防止 payload 被亂改成別人的訊息 id），才把 merged 裡的 source_excerpt 當內容
+-- 摘要存起來，且只有真的有摘要內容時才標 verified=true；訊息已經不存在（例如來源聊天室
+-- 在提案還沒確認前就被刪除）或不屬於這個帳號，就完全不附來源，不留一筆驗證不了的資料。
+-- ---------------------------------------------------------------------------
+create or replace function public.insert_message_source_if_owned(
+  p_owner_id uuid,
+  p_subject_type text,
+  p_subject_id uuid,
+  p_source_room_id uuid,
+  p_source_message_id uuid,
+  p_source_excerpt text
+)
+returns void
+language plpgsql
+as $$
+declare
+  msg record;
+  excerpt text;
+  is_verified boolean;
+begin
+  if p_source_message_id is null then
+    return;
+  end if;
+
+  select m.id as message_id, r.owner_id as room_owner_id
+    into msg
+  from public.messages m
+  join public.rooms r on r.id = m.room_id
+  where m.id = p_source_message_id;
+
+  if not found or msg.room_owner_id <> p_owner_id then
+    return;
+  end if;
+
+  excerpt := nullif(p_source_excerpt, '');
+  is_verified := excerpt is not null;
+
+  insert into public.knowledge_sources (
+    owner_id, subject_type, subject_id, source_type, room_id, message_id, verified, content_snapshot, status
+  ) values (
+    p_owner_id, p_subject_type, p_subject_id, 'message', p_source_room_id, p_source_message_id,
+    is_verified, case when is_verified then excerpt else null end, 'valid'
+  );
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- RPC：accept_knowledge_proposal / reject_knowledge_proposal
 -- 用 security invoker（預設）刻意執行，讓底下每一步 insert/update 都照樣經過 RLS，
 -- 不需要額外的權限檢查邏輯——proposal 本來就已經被 owner_id=auth.uid() 的 RLS 限制在
@@ -419,14 +542,9 @@ begin
     )
     returning id into new_id;
 
-    if proposal.source_message_id is not null then
-      insert into public.knowledge_sources (
-        owner_id, subject_type, subject_id, source_type, room_id, message_id, verified, content_snapshot, status
-      ) values (
-        proposal.owner_id, 'knowledge_item', new_id, 'message', proposal.source_room_id, proposal.source_message_id,
-        true, merged ->> 'source_excerpt', 'valid'
-      );
-    end if;
+    perform public.insert_message_source_if_owned(
+      proposal.owner_id, 'knowledge_item', new_id, proposal.source_room_id, proposal.source_message_id, merged ->> 'source_excerpt'
+    );
 
     update public.knowledge_proposals
       set status = 'accepted', resolved_knowledge_item_id = new_id, resolved_by = auth.uid(), resolved_at = now()
@@ -451,14 +569,9 @@ begin
     )
     returning id into new_id;
 
-    if proposal.source_message_id is not null then
-      insert into public.knowledge_sources (
-        owner_id, subject_type, subject_id, source_type, room_id, message_id, verified, content_snapshot, status
-      ) values (
-        proposal.owner_id, 'decision', new_id, 'message', proposal.source_room_id, proposal.source_message_id,
-        true, merged ->> 'source_excerpt', 'valid'
-      );
-    end if;
+    perform public.insert_message_source_if_owned(
+      proposal.owner_id, 'decision', new_id, proposal.source_room_id, proposal.source_message_id, merged ->> 'source_excerpt'
+    );
 
     update public.knowledge_proposals
       set status = 'accepted', resolved_decision_id = new_id, resolved_by = auth.uid(), resolved_at = now()

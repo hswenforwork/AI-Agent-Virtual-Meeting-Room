@@ -245,28 +245,45 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
   用呼叫者自己的登入身分查詢，不需要額外的權限設定。
 
 **選用：排程自動稽核**（這個 repo 不會幫你打開，你要自己決定要不要、多常跑，避免非預期的
-費用或通知）。到 Supabase Dashboard 的 **SQL Editor**，先確認你的專案有啟用 `pg_cron` 與
-`pg_net` 兩個 extension（Database → Extensions），再依你想要的頻率執行類似下面的 SQL
-（範例是每週一早上 9 點 UTC，記得把 `<project-ref>` 換成你的專案網址、`<anon-key>` 換成你
-自己的 anon key——因為要用 `triggeredBy: "schedule"` 呼叫，這個呼叫仍然需要一個「使用者」
-身分，建議另外建一個只用來跑排程的帳號，或串一支小型的 Postgres function 幫每個使用者各自
-呼叫一次）：
+費用或通知）。
+
+`knowledge-audit` 支援兩種呼叫方式：一般使用者用自己的登入身分（JWT）手動觸發（前端「立即
+檢查」按鈕就是這樣呼叫的），或是帶 `service_role` key＋明確的 `ownerId` 觸發（給排程用）。
+**排程一定要用第二種**——使用者登入的 JWT 通常一小時左右就會過期，寫死存進 `pg_cron` 的排程
+SQL 裡遲早會開始失敗，不是真正「可持續使用」的排程；`service_role` key 本身不會過期，才適合
+放進長期排程。
+
+`service_role` key 等同整個資料庫的完整存取權，**絕對不要直接寫在 SQL 裡**（`cron.job` 這張表
+本身是明文可查的）。改用 Supabase Vault 存起來，排程執行當下才解密取出：
 
 ```sql
+-- 1. 確認 pg_cron 與 pg_net 兩個 extension 已啟用（Database → Extensions）
+
+-- 2. 把 service_role key 存進 Vault（只需要做一次；<service-role-key> 到
+--    Project Settings → API 複製，不要外流）
+select vault.create_secret('<service-role-key>', 'knowledge_audit_service_key');
+
+-- 3. 建立排程（範例：每週一早上 9 點 UTC；<project-ref> 換成你的專案 ref，
+--    <owner-user-id> 換成 auth.users 裡要稽核的那個使用者 id）
 select cron.schedule(
   'knowledge-audit-weekly',
   '0 9 * * 1',
   $$
   select net.http_post(
     url := 'https://<project-ref>.functions.supabase.co/knowledge-audit',
-    headers := jsonb_build_object('Authorization', 'Bearer <某個使用者的有效 JWT>', 'content-type', 'application/json'),
-    body := jsonb_build_object('triggeredBy', 'schedule')
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'knowledge_audit_service_key'),
+      'content-type', 'application/json'
+    ),
+    body := jsonb_build_object('ownerId', '<owner-user-id>')
   );
   $$
 );
 ```
 
-要停用時執行 `select cron.unschedule('knowledge-audit-weekly');`。
+要停用時執行 `select cron.unschedule('knowledge-audit-weekly');`。這個範例一次只排一個帳號；
+多個使用者要各自排一份（`cron.schedule` 名稱要不同），這個 repo 沒有另外做「幫所有帳號各跑
+一次」的批次版本。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
