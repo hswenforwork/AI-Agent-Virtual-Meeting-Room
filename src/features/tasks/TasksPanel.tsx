@@ -9,11 +9,13 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   done: "已完成",
 };
 
+// 待辦事項現在跨聊天室共用（brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1），
+// roomId 只在「新增」時用來當這筆待辦的來源房間，列表本身不再依房間篩選。
 export function TasksPanel({ roomId }: { roomId: string }) {
-  const { data: tasks, isLoading } = useTasks(roomId);
+  const { data: tasks, isLoading } = useTasks();
   const createTask = useCreateTask(roomId);
-  const updateStatus = useUpdateTaskStatus(roomId);
-  const deleteTask = useDeleteTask(roomId);
+  const updateStatus = useUpdateTaskStatus();
+  const deleteTask = useDeleteTask();
   const [title, setTitle] = useState("");
 
   function handleCreate(event: FormEvent) {
@@ -49,10 +51,17 @@ export function TasksPanel({ roomId }: { roomId: string }) {
             className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2"
           >
             <div className="min-w-0 flex-1">
-              <div
-                className={`truncate text-sm ${task.status === "done" ? "text-slate-400 line-through" : "text-slate-900"}`}
-              >
-                {task.title}
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`truncate text-sm ${task.status === "done" ? "text-slate-400 line-through" : "text-slate-900"}`}
+                >
+                  {task.title}
+                </div>
+                {task.roomName && (
+                  <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                    來自：{task.roomName}
+                  </span>
+                )}
               </div>
             </div>
             <select

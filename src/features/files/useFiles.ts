@@ -1,23 +1,32 @@
 // 檔案夾：上傳／登記屬低風險，直接走 Storage + file-register；
 // 刪除屬高風險（訪談 Q12），走 approval_requests → approval-decide，保留稽核紀錄。
+// brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1：檔案夾跨聊天室共用，
+// 不再依 room_id 篩選列表（RLS 已經把可見範圍限制在「使用者自己名下所有房間」）；
+// Storage 裡的實際檔案路徑仍然是 {room_id}/... 不變，下載連結不受影響（見 migration 說明）。
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthProvider";
 import type { FileRow } from "../../types/database";
 
-export function useFiles(roomId: string) {
+export interface FileWithRoom extends FileRow {
+  roomName: string | null;
+}
+
+export function useFiles() {
   return useQuery({
-    queryKey: ["files", roomId],
-    queryFn: async (): Promise<FileRow[]> => {
+    queryKey: ["files"],
+    queryFn: async (): Promise<FileWithRoom[]> => {
       const { data, error } = await supabase
         .from("files")
-        .select("*")
-        .eq("room_id", roomId)
+        .select("*, rooms(name)")
         .eq("status", "active")
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []).map(({ rooms, ...file }) => ({
+        ...file,
+        roomName: (rooms as { name: string } | null)?.name ?? null,
+      }));
     },
   });
 }
@@ -56,16 +65,18 @@ export function useUploadFile(roomId: string) {
       if (registerErr) throw registerErr;
       return data as { fileId: string };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["files", roomId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["files"] }),
   });
 }
 
-export function useRequestDeleteFile(roomId: string) {
+// 刪除審核走 approval_requests，room_id 用「這個檔案原本上傳到的房間」（不是使用者目前正在
+// 看的房間——共用列表可能是在別的房間檢視這份檔案），呼叫端傳整個 file 物件即可。
+export function useRequestDeleteFile() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (fileId: string) => {
+    mutationFn: async ({ fileId, roomId }: { fileId: string; roomId: string }) => {
       if (!user) throw new Error("尚未登入");
 
       const { data: approval, error: approvalErr } = await supabase
@@ -86,7 +97,7 @@ export function useRequestDeleteFile(roomId: string) {
       });
       if (decideErr) throw decideErr;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["files", roomId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["files"] }),
   });
 }
 

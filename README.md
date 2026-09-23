@@ -41,6 +41,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0008_room_sidebar_history.sql`（左側聊天室歷史清單，見下方「附加設定」）
    - `supabase/migrations/0009_byok_api_keys.sql`（使用者自己輸入 API key，見下方「附加設定」）
    - `supabase/migrations/0010_provider_model_selection.sql`（使用者選擇模型，見下方「附加設定」）
+   - `supabase/migrations/0011_shared_workspace.sql`（記事本／待辦事項／檔案夾跨聊天室共用，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -124,6 +125,20 @@ Supabase Vault，部署者跟其他使用者都看不到明碼（設計見
 
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0010_provider_model_selection.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：記事本／待辦事項／檔案夾跨聊天室共用、AI 可直接寫回
+
+右側的記事本、待辦事項、檔案夾**不再分房間**，同一個帳號底下所有聊天室共用同一份資料，任何一個聊天室的
+AI 都能讀到、也能直接寫入（例如請 AI「幫我記一下 XX」會真的寫進記事本，而不是變成一個檔案）；
+每筆資料如果是舊資料（改版前建立的），旁邊會顯示一個小標籤標明「來自：原本的房間名稱」方便追溯，新建立的
+資料則沒有這個標籤（設計見
+[`brainstorms/2026-09-23-notes-write-and-shared-workspace.md`](brainstorms/2026-09-23-notes-write-and-shared-workspace.md)）。
+AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類呼叫，三家供應商都適用；找不到、或不確定要修改
+哪一筆既有記事/待辦時，AI 不會亂猜，只會回問你說清楚是哪一筆。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0011_shared_workspace.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+這個 migration 只改 RLS 政策，不搬動任何既有資料、也不改欄位，上傳過的檔案不受影響。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
