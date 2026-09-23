@@ -83,7 +83,7 @@ export function RoomSidebar({ onNavigate, collapsed }: { onNavigate?: () => void
   }
 
   return (
-    <div className="flex h-full flex-col bg-slate-50">
+    <div className="flex h-full w-full min-w-0 flex-col bg-slate-50">
       <div className="p-3">
         <button
           onClick={handleNewChat}

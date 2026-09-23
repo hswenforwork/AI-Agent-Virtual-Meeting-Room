@@ -32,7 +32,7 @@ export function AppLayout() {
     <div className="flex h-screen">
       {/* 桌面版：常駐側欄，可拖拉調整寬度／收合成窄 icon 列（brainstorms/2026-09-22-sidebar-resize-ai-context.md） */}
       <aside
-        className="relative hidden shrink-0 border-r border-slate-200 md:flex"
+        className="relative hidden shrink-0 overflow-hidden border-r border-slate-200 md:flex"
         style={{ width: sidebar.collapsed ? COLLAPSED_WIDTH : sidebar.width }}
       >
         <RoomSidebar collapsed={sidebar.collapsed} />
@@ -46,7 +46,7 @@ export function AppLayout() {
         {!sidebar.collapsed && (
           <div
             onPointerDown={sidebar.startResize}
-            className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-slate-300"
+            className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-slate-300"
           />
         )}
       </aside>

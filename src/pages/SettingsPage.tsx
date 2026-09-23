@@ -6,7 +6,7 @@ import { useApiKeyStatus, type ProviderSlug } from "../features/settings/useApiK
 const PROVIDERS: ProviderSlug[] = ["anthropic", "openai", "google"];
 
 export function SettingsPage() {
-  const { data: statuses, isLoading } = useApiKeyStatus();
+  const { data: statuses, isLoading, isError, error } = useApiKeyStatus();
   const statusByProvider = new Map((statuses ?? []).map((s) => [s.provider, s]));
 
   return (
@@ -27,6 +27,13 @@ export function SettingsPage() {
 
         <div className="mt-4 space-y-3">
           {isLoading && <div className="text-xs text-slate-400">載入中…</div>}
+          {isError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              讀取金鑰設定狀態失敗，下面顯示的「尚未設定」可能不準確（{error instanceof Error ? error.message : "未知錯誤"}），
+              請重新整理頁面再試一次；若持續發生，請確認資料庫 migration 是否都已套用到最新版本
+              （尤其是 supabase/migrations/0010_provider_model_selection.sql）。
+            </div>
+          )}
           {!isLoading &&
             PROVIDERS.map((provider) => (
               <ProviderKeyCard key={provider} provider={provider} status={statusByProvider.get(provider)} />
