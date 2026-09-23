@@ -83,9 +83,22 @@ create policy "decisions_update_own" on public.decisions
 -- 操作直接失敗（PR #44 review：不能因為目標決策不符合條件就默默跳過取代，讓兩筆決策同時
 -- 都是 active）。用 for update 鎖住目標那一列，避免「同時對同一筆舊決策送出兩個取代」時
 -- 兩筆新決策都通過檢查、都宣稱自己取代了它（見 docs/共享知識系統-測試報告.md 的重複取代測試）。
+-- PR #44 第四輪 review 修正（revoke update 之後才發現的連帶問題）：PostgreSQL 的
+-- `for update` 列鎖，除了 SELECT 權限以外還額外要求呼叫者對目標表有 UPDATE 權限
+-- （`for share` 也一樣，已經實測驗證過），跟這一列鎖最終會不會真的執行 UPDATE 無關，
+-- 純粹是鎖定子句本身的權限規則。revoke 掉 authenticated 對 decisions 的 UPDATE 之後，
+-- 這個函式原本（非 security definer）的寫法會讓一般使用者連合法的新增取代決策都做不到
+-- （insert 觸發這個 before insert trigger 就直接 permission denied）。所以跟
+-- handle_decision_supersede() 一樣改成 security definer：用函式擁有者的權限做這個
+-- for update 鎖定與讀取。附帶影響：如果 supersedes_id 指向別人的決策，RLS 本來會讓這裡
+-- 的 select 直接看不到那一列（回報「找不到要取代的決策」），security definer 繞過 RLS 後
+-- 這裡看得到那一列、能判斷 owner_id 不符，回報更精確的「不能取代不屬於自己的決策」——
+-- 這只是錯誤訊息的差異（洩漏「這個 id 存在」，不洩漏內容），操作本身一樣會被擋下、
+-- 不會建立任何新決策，攻擊者要利用這點得先猜中別人一筆決策的 uuid。
 create or replace function public.validate_decision_supersede()
 returns trigger
 language plpgsql
+security definer set search_path = public
 as $$
 declare
   target public.decisions%rowtype;
@@ -119,27 +132,24 @@ create trigger on_decision_validate_supersede
 -- 並回填 superseded_by_id；舊決策整列都還在（不是刪除、不是覆寫內容），只是狀態換了，
 -- 之後檢索（buildKnowledgeContext）只會把 active 的決策餵給模型。
 --
--- PR #44 第三輪 review 修正：下面 enforce_decision_append_only() 現在連 status／
--- superseded_by_id 都保護了，這裡執行的 UPDATE 也會經過那個 trigger——用一個交易層級的
--- GUC（`app.decisions_supersede_update`）明確標記「這次 status／superseded_by_id 的變動
--- 是我這個函式本身要做的合法操作」，讓 enforce_decision_append_only() 用這個明確旗標判斷，
--- 不是用 pg_trigger_depth() 這種「剛好巢狀在某個 trigger 裡」的間接推定（這種推定沒辦法
--- 保證「巢狀」一定等於「這個特定操作」，見下面 enforce_decision_append_only() 的說明）。
--- set_config 的第三個參數 true＝only for this transaction，交易結束（commit／rollback）
--- 就自動失效，不用另外清掉，也不會外洩給同一個連線之後處理的其他交易。
+-- PR #44 第四輪 review 修正（真正的重點）：這個函式標成 security definer，用函式擁有者
+-- （執行這份 migration 的角色，正常情況下是 postgres／專案的 owner，權限足夠）的身分執行
+-- 底下這個 UPDATE，不是用呼叫它的使用者身分——因為 authenticated／service_role 已經被
+-- revoke 掉對 decisions 的 UPDATE 權限（見下面 enforce_decision_append_only() 之後的
+-- revoke 陳述式，那才是真正擋住使用者直接改 status／superseded_by_id 的防線），一般使用者
+-- 執行 insert 觸發這個 trigger 時，如果這個函式不是 security definer，底下的 UPDATE 會直接
+-- 因為權限不足失敗。search_path 明確釘死 public，避免 security definer 函式被 search_path
+-- 劫持的常見風險。
 create or replace function public.handle_decision_supersede()
 returns trigger
 language plpgsql
+security definer set search_path = public
 as $$
 begin
   if new.supersedes_id is not null then
-    perform set_config('app.decisions_supersede_update', 'true', true);
     update public.decisions
     set status = 'superseded', superseded_by_id = new.id, updated_at = now()
     where id = new.supersedes_id and owner_id = new.owner_id and status = 'active';
-    -- 用完立刻關掉，把「允許」的視窗縮到只有這一個 UPDATE 陳述式，不留給同一筆交易裡
-    -- 後續（理論上）還有的其他陳述式可以搭便車。
-    perform set_config('app.decisions_supersede_update', 'false', true);
   end if;
   return new;
 end;
@@ -150,34 +160,29 @@ create trigger on_decision_supersede
   after insert on public.decisions
   for each row execute procedure public.handle_decision_supersede();
 
--- 「只追加」的最後一道防線：內容欄位（含 status／superseded_by_id）一律不能被直接修改，
--- 決策不能被直接刪除——包含 service_role（這裡故意不判斷呼叫者角色，任何人、任何管道都
--- 一樣）。只放行兩種明確、經過驗證的系統內部操作，都不是用「巢狀在某個 trigger 裡」這種
--- 間接、可能被其他未來程式路徑意外符合的訊號來判斷（PR #44 review 一路的教訓：先用
--- pg_trigger_depth() > 1 判斷 DELETE 是不是合法級聯，但 reviewer 指出這只證明「巢狀在
--- 某個 trigger 裡」，不保證「巢狀的原因就是帳號刪除」；同一版也完全沒保護 status／
--- superseded_by_id，讓人可以繞過 validate_decision_supersede() 直接把一筆決策改成
--- superseded，不必真的新增取代它的決策）：
+-- 「只追加」真正的防線是資料庫權限，不是 trigger（PR #44 第四輪 review 修正）：
+-- 第三輪版本用一個交易層級的自訂 GUC（`app.decisions_supersede_update`）當「這是系統自己
+-- 的合法操作」的旗標，但 reviewer 指出、也實測證實了：PostgreSQL 的 `app.*` 這種自訂參數
+-- 不是任何形式的祕密或特權標記，任何一般登入角色都能在自己的交易裡直接
+-- `select set_config('app.decisions_supersede_update', 'true', true)` 把它設成
+-- true，接著照樣直接 UPDATE status／superseded_by_id，整套判斷形同虛設。
 --
---   1. status／superseded_by_id 的變動：只有 handle_decision_supersede() 明確設定過
---      `app.decisions_supersede_update` 這個交易層級旗標時才放行——這是它自己的內部操作，
---      不是靠「這次更新剛好巢狀在某個 trigger 裡」去猜。使用者或任何其他程式路徑直接
---      UPDATE 這兩個欄位，一律擋下。
---   2. source_room_id 允許被改成 null：這是來源房間的軟參照（on delete set null），房間被
---      刪除時 Postgres 會對 decisions 執行一次 UPDATE 把它設成 null——這個 UPDATE 也會經過
---      這個 trigger，如果連這個都擋，刪除聊天室這個功能對「有建過決策」的房間會直接整個
---      失敗（回傳外鍵/trigger 錯誤），使用者的刪除操作看起來像壞掉了。
---   3. DELETE：decisions.owner_id 是 on delete cascade 參照 profiles，使用者刪除自己帳號時
---      Postgres 會對這個帳號名下所有決策執行級聯刪除——這個級聯刪除一樣會先觸發這個
---      trigger，如果不放行，使用者只要建立過一筆決策，就永遠沒辦法刪除自己的帳號。
---      這裡沒辦法像上面 status／superseded_by_id 那樣插入自己的旗標（觸發級聯的是
---      PostgreSQL 自己的外鍵機制，不是我們寫的函式），改用更貼近實際條件的判斷：這一列
---      的 owner_id 在「這個交易當下」查得到對應的 profiles 列嗎？如果查不到，代表這個帳號
---      正在（或已經）被刪除，這個刪除才合法放行；只要帳號還在，一律擋下，不管有沒有巢狀在
---      別的 trigger 裡。額外用 pg_trigger_depth() > 1 當第二層佐證（一般使用者、
---      service_role 都不可能巢狀在別的 trigger context 裡對 decisions 下 DELETE，除非真的
---      是這種帳號刪除級聯），兩個條件都成立才放行，把「巢狀」跟「巢狀的原因」一起驗證，
---      不是只看其中一個。
+-- 真正的修法：下面這段 migration 最後會 `revoke update on public.decisions from
+-- authenticated, anon, service_role`——之後任何身分想對 decisions 執行 UPDATE 陳述式，
+-- 都會在陳述式本身被資料庫直接拒絕（permission denied for table decisions），連行都不會
+-- 被處理到，trigger 根本沒有機會執行。這是資料庫權限系統本身的邊界，不是任何可以被
+-- session/交易變數繞過的邏輯判斷。唯一還能合法改變 status／superseded_by_id 的路徑，是
+-- 上面 handle_decision_supersede()——它現在是 security definer，用函式擁有者的權限執行，
+-- 不受這個 revoke 影響。已經實測確認：即使 revoke 掉 UPDATE，房間刪除造成的
+-- `source_room_id` 軟參照 `on delete set null` 級聯仍然正常運作（PostgreSQL 的外鍵參照
+-- 動作是系統層級操作，不受呼叫端自己在該表上的權限限制，這點也已經用真實測試驗證過，
+-- 不是只看官方文件推論，見測試報告）。
+--
+-- 下面這個 trigger 保留下來當**第二層、非權威性**的防禦（belt-and-suspenders）：如果未來
+-- 有人不小心把 UPDATE 權限重新 grant 回去，這裡還能擋下大部分不知情的誤用；但它本身
+-- 不是、也不該被當成安全邊界——真正的邊界是上面的 revoke。DELETE 分支的判斷條件
+-- （`pg_trigger_depth() > 1` 且擁有者的 profiles 列在交易當下已經不存在）維持第三輪的
+-- 設計不變，這個條件已經用真實的 raise notice 證據驗證過（見測試報告），這裡不重複。
 create or replace function public.enforce_decision_append_only()
 returns trigger
 language plpgsql
@@ -190,10 +195,27 @@ begin
     raise exception '決策紀錄只能新增，不能刪除；要調整請新增一筆決策並用 supersedes_id 指向這一筆';
   end if;
 
-  if (old.status is distinct from new.status or old.superseded_by_id is distinct from new.superseded_by_id)
-    and coalesce(current_setting('app.decisions_supersede_update', true), 'false') <> 'true'
-  then
-    raise exception '決策的狀態只能透過新增一筆帶 supersedes_id 的決策來改變，不能直接修改';
+  -- 第二層防禦：即使有一天 UPDATE 權限被不小心重新 grant 回一般角色，這裡也不是看
+  -- 一個任何角色都能自己設定的旗標，而是要求「這個 status/superseded_by_id 的變化，
+  -- 剛好對應一筆真實存在、指回這一列的取代決策」——也就是 handle_decision_supersede()
+  -- 唯一會做的那種變化（active -> superseded，且 superseded_by_id 指向一筆
+  -- supersedes_id = old.id、owner_id 相同的決策）。單靠一次 UPDATE 陳述式偽造不出這個
+  -- 前提：要先合法新增一筆取代決策，而那筆新增本身就已經觸發 handle_decision_supersede()
+  -- 把舊決策更新好了，不需要、也不能再另外手動 UPDATE 一次。
+  if (old.status is distinct from new.status or old.superseded_by_id is distinct from new.superseded_by_id) then
+    if not (
+      old.status = 'active'
+      and new.status = 'superseded'
+      and new.superseded_by_id is not null
+      and exists (
+        select 1 from public.decisions d
+        where d.id = new.superseded_by_id
+          and d.supersedes_id = old.id
+          and d.owner_id = old.owner_id
+      )
+    ) then
+      raise exception '決策的狀態只能透過新增一筆帶 supersedes_id 的決策來改變，不能直接修改';
+    end if;
   end if;
 
   if old.title is distinct from new.title
@@ -217,6 +239,15 @@ drop trigger if exists on_decision_append_only on public.decisions;
 create trigger on_decision_append_only
   before update or delete on public.decisions
   for each row execute procedure public.enforce_decision_append_only();
+
+-- 真正的「只追加」邊界（PR #44 第四輪 review 修正）：直接在資料庫權限層擋掉 UPDATE。
+-- 上面 decisions_update_own 這條 RLS policy 因此變成不會再放行任何一般使用者的 UPDATE
+-- 陳述式（因為陳述式本身就先被 revoke 擋下，RLS 根本輪不到），但仍然保留在 migration 裡，
+-- 當作萬一未來這個 revoke 被誤還原時的次一層防線——它並不是現在真正生效的邊界。
+-- 目前程式碼（src/、supabase/functions/）都不曾對 decisions 執行 update（已確認過），
+-- 只有 insert/select，所以這個 revoke 不影響任何既有功能；唯一合法能繞過它的路徑是
+-- 上面 security definer 的 handle_decision_supersede()。
+revoke update on public.decisions from authenticated, anon, service_role;
 
 -- ---------------------------------------------------------------------------
 -- knowledge_sources：來源索引，每則知識／決策連回聊天室訊息、記事、待辦、檔案或外部來源
