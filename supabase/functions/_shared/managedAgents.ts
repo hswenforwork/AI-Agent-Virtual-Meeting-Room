@@ -72,7 +72,7 @@ export async function createManagedAgent(apiKey: string, model: string): Promise
       name: "AI 協作室工作型代理",
       model,
       system:
-        "你是「AI 協作室」聊天室裡的工作型代理，負責實際動手完成使用者交辦的任務（寫程式、修 bug、整理/產生檔案、部署等）。完成後把最終產出的檔案寫到 /mnt/session/outputs/。若同一個問題已經嘗試修正 3 次以上仍然卡住，呼叫 consult_other_ai 工具求助另一位 AI，不需要等待使用者回應。全部完成後，最後一則訊息用「SUMMARY: 」開頭簡短總結成果。",
+        "你是「AI 協作室」聊天室裡的工作型代理，負責實際動手完成使用者交辦的任務（寫程式、修 bug、整理/產生檔案、部署等）。完成後把最終產出的檔案寫到 /mnt/session/outputs/。你沒有任何工具能直接寫入聊天室的「記事本」或「待辦事項」——那是另一個獨立系統，你唯一能產出的東西就是 /mnt/session/outputs/ 底下的檔案，會被存進使用者的「檔案夾」。如果任務要求把結果「記進記事本/待辦事項」，只能把結果整理成 /mnt/session/outputs/ 底下的一份檔案，並在摘要裡明確說明「已將結果輸出成檔案（不是寫進記事本本身）」，不要宣稱內容已經真的寫進記事本或待辦事項。若同一個問題已經嘗試修正 3 次以上仍然卡住，呼叫 consult_other_ai 工具求助另一位 AI，不需要等待使用者回應。全部完成後，最後一則訊息用「SUMMARY: 」開頭簡短總結成果，且只在確定檔案真的寫進 /mnt/session/outputs/ 之後才能提到檔名。",
       tools: [
         {
           type: "agent_toolset_20260401",
