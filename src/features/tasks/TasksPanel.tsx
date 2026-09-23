@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { format } from "date-fns";
 import { Trash2 } from "lucide-react";
 import { useCreateTask, useDeleteTask, useTasks, useUpdateTaskStatus } from "./useTasks";
 import type { TaskStatus } from "../../types/database";
@@ -53,15 +54,16 @@ export function TasksPanel({ roomId }: { roomId: string }) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <div
-                  className={`truncate text-sm ${task.status === "done" ? "text-slate-400 line-through" : "text-slate-900"}`}
+                  className={`min-w-0 flex-1 truncate text-sm ${task.status === "done" ? "text-slate-400 line-through" : "text-slate-900"}`}
                 >
                   {task.title}
                 </div>
-                {task.roomName && (
-                  <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                    來自：{task.roomName}
-                  </span>
-                )}
+                <span
+                  className="shrink-0 text-[10px] text-slate-400"
+                  title={task.roomName ? `來自：${task.roomName}` : undefined}
+                >
+                  {format(new Date(task.created_at), "MM/dd HH:mm")}
+                </span>
               </div>
             </div>
             <select

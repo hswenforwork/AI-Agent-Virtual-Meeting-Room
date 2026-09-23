@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { format } from "date-fns";
 import { toast } from "sonner";
 import { Download, Trash2, Upload } from "lucide-react";
 import { useFiles, useRequestDeleteFile, useUploadFile, getFileDownloadUrl, type FileWithRoom } from "./useFiles";
@@ -79,12 +80,13 @@ export function FilesPanel({ roomId }: { roomId: string }) {
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <div className="truncate text-sm">{file.name}</div>
-                {file.roomName && (
-                  <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                    來自：{file.roomName}
-                  </span>
-                )}
+                <div className="min-w-0 flex-1 truncate text-sm">{file.name}</div>
+                <span
+                  className="shrink-0 text-[10px] text-slate-400"
+                  title={file.roomName ? `來自：${file.roomName}` : undefined}
+                >
+                  {format(new Date(file.created_at), "MM/dd HH:mm")}
+                </span>
               </div>
               <div className="text-xs text-slate-400">{formatSize(file.size_bytes)}</div>
             </div>

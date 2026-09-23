@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { format } from "date-fns";
 import { Plus, Trash2 } from "lucide-react";
 import { useCreateNote, useDeleteNote, useNotes, useUpdateNote, type NoteWithRoom } from "./useNotes";
 
@@ -37,12 +38,10 @@ export function NotesPanel({ roomId }: { roomId: string }) {
             className="block w-full border-b border-slate-100 px-3 py-2 text-left hover:bg-slate-50"
           >
             <div className="flex items-center gap-1.5">
-              <div className="truncate text-sm font-medium">{note.title || "未命名記事"}</div>
-              {note.roomName && (
-                <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                  來自：{note.roomName}
-                </span>
-              )}
+              <div className="min-w-0 flex-1 truncate text-sm font-medium">{note.title || "未命名記事"}</div>
+              <span className="shrink-0 text-[10px] text-slate-400">
+                {format(new Date(note.updated_at), "MM/dd HH:mm")}
+              </span>
             </div>
             <div className="truncate text-xs text-slate-400">{note.content || "（沒有內容）"}</div>
           </button>
