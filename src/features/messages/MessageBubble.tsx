@@ -8,20 +8,29 @@ import { formatTokenUsage } from "./tokenUsage";
 export function MessageBubble({
   message,
   agentsById,
+  highlighted,
 }: {
   message: MessageRow;
   agentsById: Map<string, AgentRow>;
+  // 共享知識的來源連結（?highlight=messageId，見 knowledgeContext.ts／RoomPage.tsx）跳轉到這裡時，
+  // 短暫加上醒目樣式，讓使用者一眼看到「這就是被引用的那則訊息」。
+  highlighted?: boolean;
 }) {
   if (message.sender_type === "system") {
     return (
-      <div className="mx-auto max-w-md rounded-full bg-slate-200 px-3 py-1 text-center text-xs text-slate-600">
+      <div
+        id={`message-${message.id}`}
+        className={`mx-auto max-w-md rounded-full bg-slate-200 px-3 py-1 text-center text-xs text-slate-600 ${
+          highlighted ? "ring-2 ring-amber-400" : ""
+        }`}
+      >
         {message.content}
       </div>
     );
   }
 
   if (message.kind === "task_card") {
-    return <TaskCardMessage message={message} agentsById={agentsById} />;
+    return <TaskCardMessage message={message} agentsById={agentsById} highlighted={highlighted} />;
   }
 
   const isUser = message.sender_type === "user";
@@ -30,11 +39,11 @@ export function MessageBubble({
   const tokenUsage = !isUser ? formatTokenUsage(message.input_tokens, message.output_tokens) : null;
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div id={`message-${message.id}`} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm shadow-sm ${
           isUser ? "bg-slate-900 text-white" : "bg-white text-slate-900 border border-slate-200"
-        }`}
+        } ${highlighted ? "ring-2 ring-amber-400" : ""}`}
       >
         {!isUser && <div className="mb-1 text-xs font-semibold text-slate-500">{label}</div>}
         <div className="markdown-body">
