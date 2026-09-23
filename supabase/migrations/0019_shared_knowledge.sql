@@ -137,15 +137,32 @@ create trigger on_decision_supersede
   after insert on public.decisions
   for each row execute procedure public.handle_decision_supersede();
 
--- 「只追加」的最後一道防線：內容欄位一律不能被修改，決策一律不能被刪除——包含 service_role
+-- 「只追加」的最後一道防線：內容欄位一律不能被修改，決策不能被直接刪除——包含 service_role
 -- （這裡故意不判斷呼叫者角色，任何人、任何管道都一樣）。只放行 handle_decision_supersede()
 -- 這個 trigger 自己會做的那種更新（只改 status／superseded_by_id／updated_at）。
+--
+-- 兩個例外，都是刻意放行（PR #44 第二輪 review 修正，第一版的 trigger 會把這兩件事都擋住，
+-- 是真正的 bug，不是「更嚴格比較安全」）：
+--   1. source_room_id 允許被改成 null：這是來源房間的軟參照（on delete set null），房間被
+--      刪除時 Postgres 會對 decisions 執行一次 UPDATE 把它設成 null——這個 UPDATE 也會經過
+--      這個 trigger，如果連這個都擋，刪除聊天室這個功能對「有建過決策」的房間會直接整個
+--      失敗（回傳外鍵/trigger 錯誤），使用者的刪除操作看起來像壞掉了。
+--   2. DELETE：decisions.owner_id 是 on delete cascade 參照 profiles，使用者刪除自己帳號時
+--      Postgres 會對這個帳號名下所有決策執行級聯刪除——這個級聯刪除一樣會先觸發這個
+--      trigger，如果不放行，使用者只要建立過一筆決策，就永遠沒辦法刪除自己的帳號。
+--      用 pg_trigger_depth()（目前這個 trigger 本身的執行就是深度 1）判斷：等於 1 代表是
+--      有人直接對 decisions 下 DELETE（沒有任何外層 trigger context），這種一律擋下；
+--      大於 1 代表這次刪除是從別的 trigger context 觸發的——在這個 schema 裡，會讓
+--      decisions 被刪除的唯一 trigger 路徑就是 profiles 的級聯刪除，所以這裡放行。
 create or replace function public.enforce_decision_append_only()
 returns trigger
 language plpgsql
 as $$
 begin
   if tg_op = 'DELETE' then
+    if pg_trigger_depth() > 1 then
+      return old;
+    end if;
     raise exception '決策紀錄只能新增，不能刪除；要調整請新增一筆決策並用 supersedes_id 指向這一筆';
   end if;
 
@@ -155,7 +172,6 @@ begin
     or old.alternatives is distinct from new.alternatives
     or old.decided_at is distinct from new.decided_at
     or old.supersedes_id is distinct from new.supersedes_id
-    or old.source_room_id is distinct from new.source_room_id
     or old.created_by is distinct from new.created_by
     or old.owner_id is distinct from new.owner_id
     or old.origin_proposal_id is distinct from new.origin_proposal_id
@@ -209,6 +225,40 @@ create policy "knowledge_sources_update_own" on public.knowledge_sources
   for update using (owner_id = auth.uid());
 create policy "knowledge_sources_delete_own" on public.knowledge_sources
   for delete using (owner_id = auth.uid());
+
+-- 確認來源指向的知識/決策確實屬於同一個帳號（PR #44 第二輪 review 修正）：RLS 的
+-- knowledge_sources_insert_own 只檢查「這一列的 owner_id 是不是自己」，不會檢查
+-- subject_id 指到的知識/決策是不是也屬於自己——沒有這個檢查的話，任何使用者只要知道
+-- （或猜到）別人一筆知識/決策的 id，就可以替它塞一筆自己捏造、甚至標成 verified=true
+-- 的「來源」，讓對方的代理檢索到偽造資料。跟 validate_knowledge_link() 同一種寫法。
+create or replace function public.validate_knowledge_source_subject()
+returns trigger
+language plpgsql
+as $$
+declare
+  subject_owner uuid;
+begin
+  if new.subject_type = 'knowledge_item' then
+    select owner_id into subject_owner from public.knowledge_items where id = new.subject_id;
+  else
+    select owner_id into subject_owner from public.decisions where id = new.subject_id;
+  end if;
+
+  if subject_owner is null then
+    raise exception '找不到這則來源指向的知識或決策';
+  end if;
+  if subject_owner <> new.owner_id then
+    raise exception '只能替自己名下的知識或決策新增來源';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_knowledge_source_validate_subject on public.knowledge_sources;
+create trigger on_knowledge_source_validate_subject
+  before insert or update on public.knowledge_sources
+  for each row execute procedure public.validate_knowledge_source_subject();
 
 -- 來源指向的訊息/記事/待辦/檔案被刪除時（on delete set null），對應欄位會從有值被沖成
 -- null——用 BEFORE UPDATE trigger 偵測到這個轉變就自動把 status 改成 invalid，但
@@ -448,19 +498,22 @@ create policy "knowledge_audit_reports_delete_own" on public.knowledge_audit_rep
 
 -- ---------------------------------------------------------------------------
 -- 來源訊息安全寫入：accept_knowledge_proposal() 的 'knowledge'／'decision' 分支共用。
--- PR #44 review 修正：原本不管 source_message_id 是什麼都直接標 verified=true，等於沒有
--- 真的核對內容就宣稱「已驗證」。這裡改成：先確認來源訊息確實存在、而且屬於這個提案本身的
--- owner_id（防止 payload 被亂改成別人的訊息 id），才把 merged 裡的 source_excerpt 當內容
--- 摘要存起來，且只有真的有摘要內容時才標 verified=true；訊息已經不存在（例如來源聊天室
--- 在提案還沒確認前就被刪除）或不屬於這個帳號，就完全不附來源，不留一筆驗證不了的資料。
+-- PR #44 第二輪 review 修正：第一版仍然會把呼叫端傳進來的 p_source_excerpt／
+-- p_source_room_id 當內容存起來——但 accept_knowledge_proposal() 是把
+-- `proposal.payload || edits` 之後的值傳進來，edits 是呼叫這個 RPC 的使用者自己可以
+-- 任意指定的參數，等於使用者可以自己捏造一段文字、蓋掉提案原本的內容，讓系統標成
+-- verified=true。這裡改成完全不信任任何呼叫端傳進來的內容／房間 id，只留
+-- p_source_message_id 當「查哪一則訊息」的依據，摘要（content_snapshot）跟房間
+-- （room_id）都直接從資料庫當下讀到的 messages／rooms 這兩張表取值，同時確認這則訊息
+-- 所在房間的 owner_id 等於這個提案本身的 owner_id（防止 source_message_id 被改成別人
+-- 帳號的訊息 id）。訊息已經不存在（例如來源聊天室在提案還沒確認前就被刪除）或不屬於
+-- 這個帳號，就完全不附來源，不留一筆驗證不了、甚至可能外洩別人訊息內容的資料。
 -- ---------------------------------------------------------------------------
 create or replace function public.insert_message_source_if_owned(
   p_owner_id uuid,
   p_subject_type text,
   p_subject_id uuid,
-  p_source_room_id uuid,
-  p_source_message_id uuid,
-  p_source_excerpt text
+  p_source_message_id uuid
 )
 returns void
 language plpgsql
@@ -474,7 +527,7 @@ begin
     return;
   end if;
 
-  select m.id as message_id, r.owner_id as room_owner_id
+  select m.content as content, m.room_id as room_id, r.owner_id as room_owner_id
     into msg
   from public.messages m
   join public.rooms r on r.id = m.room_id
@@ -484,13 +537,13 @@ begin
     return;
   end if;
 
-  excerpt := nullif(p_source_excerpt, '');
+  excerpt := nullif(left(coalesce(msg.content, ''), 500), '');
   is_verified := excerpt is not null;
 
   insert into public.knowledge_sources (
     owner_id, subject_type, subject_id, source_type, room_id, message_id, verified, content_snapshot, status
   ) values (
-    p_owner_id, p_subject_type, p_subject_id, 'message', p_source_room_id, p_source_message_id,
+    p_owner_id, p_subject_type, p_subject_id, 'message', msg.room_id, p_source_message_id,
     is_verified, case when is_verified then excerpt else null end, 'valid'
   );
 end;
@@ -542,9 +595,7 @@ begin
     )
     returning id into new_id;
 
-    perform public.insert_message_source_if_owned(
-      proposal.owner_id, 'knowledge_item', new_id, proposal.source_room_id, proposal.source_message_id, merged ->> 'source_excerpt'
-    );
+    perform public.insert_message_source_if_owned(proposal.owner_id, 'knowledge_item', new_id, proposal.source_message_id);
 
     update public.knowledge_proposals
       set status = 'accepted', resolved_knowledge_item_id = new_id, resolved_by = auth.uid(), resolved_at = now()
@@ -569,9 +620,7 @@ begin
     )
     returning id into new_id;
 
-    perform public.insert_message_source_if_owned(
-      proposal.owner_id, 'decision', new_id, proposal.source_room_id, proposal.source_message_id, merged ->> 'source_excerpt'
-    );
+    perform public.insert_message_source_if_owned(proposal.owner_id, 'decision', new_id, proposal.source_message_id);
 
     update public.knowledge_proposals
       set status = 'accepted', resolved_decision_id = new_id, resolved_by = auth.uid(), resolved_at = now()

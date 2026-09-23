@@ -187,8 +187,14 @@ function buildSourceLink(source: KnowledgeSourceRow): string | null {
 
 // 只取 status='valid' 的來源（已失效的不當成可引用證據，只在「共享知識」分頁本身顯示）；
 // 每個 subject 最多 SOURCE_MAX_PER_SUBJECT 筆，優先已驗證內容的。
+// PR #44 第二輪 review 修正：明確加上 owner_id 過濾——這個查詢用 service_role 執行，不會
+// 自動套用 RLS，subject_id 雖然是從已經用 owner_id 篩過的 items/decisions 查出來的，但
+// knowledge_sources 本身如果曾經被寫進一筆 owner_id 不同、subject_id 卻剛好對到的髒資料
+// （見 validate_knowledge_source_subject() trigger，這裡是讀取端再加一層防護），不應該
+// 讓它混進另一個帳號的檢索結果。
 async function fetchCitableSources(
   admin: AdminClient,
+  ownerId: string,
   subjectType: "knowledge_item" | "decision",
   ids: string[],
 ): Promise<Map<string, { shown: CitableSource[]; total: number }>> {
@@ -198,6 +204,7 @@ async function fetchCitableSources(
   const { data, error } = await admin
     .from("knowledge_sources")
     .select("id, subject_id, source_type, room_id, message_id, external_url, verified, content_snapshot, created_at")
+    .eq("owner_id", ownerId)
     .eq("subject_type", subjectType)
     .eq("status", "valid")
     .in("subject_id", ids)
@@ -278,8 +285,8 @@ export async function buildKnowledgeContext(
   if (items.length === 0 && decisions.length === 0) return "";
 
   const [itemSources, decisionSources, links] = await Promise.all([
-    fetchCitableSources(admin, "knowledge_item", items.map((i) => i.id)),
-    fetchCitableSources(admin, "decision", decisions.map((d) => d.id)),
+    fetchCitableSources(admin, ownerId, "knowledge_item", items.map((i) => i.id)),
+    fetchCitableSources(admin, ownerId, "decision", decisions.map((d) => d.id)),
     fetchRelevantLinks(admin, ownerId, [...items.map((i) => i.id), ...decisions.map((d) => d.id)]),
   ]);
 

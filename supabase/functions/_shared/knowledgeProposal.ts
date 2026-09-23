@@ -100,30 +100,6 @@ export interface ProposeKnowledgeInput {
   relation?: string;
 }
 
-const SOURCE_EXCERPT_MAX_CHARS = 500;
-
-// 安全地產生來源摘要（PR #44 review 修正）：sourceMessageId／roomId 是這次 agent-run 執行
-// 本身綁定的觸發訊息／房間（來自 run.trigger_message_id／run.room_id，不是模型自己填的
-// 欄位），這裡重新查一次資料庫，確認這則訊息目前確實存在、而且所在房間屬於 ownerId，才把
-// 內容摘要放進提案；查不到或不屬於這個帳號就不附摘要——accept_knowledge_proposal()
-// （0019_shared_knowledge.sql 的 insert_message_source_if_owned()）也會在確認的當下再驗證
-// 一次同樣的條件，只有真的附上摘要的來源才會被標記 verified=true。
-async function fetchOwnedSourceExcerpt(admin: AdminClient, ownerId: string, messageId: string): Promise<string | null> {
-  const { data, error } = await admin
-    .from("messages")
-    .select("content, rooms!inner(owner_id)")
-    .eq("id", messageId)
-    .maybeSingle();
-  if (error || !data) return null;
-  const roomOwnerId = (data.rooms as unknown as { owner_id: string } | null)?.owner_id;
-  if (roomOwnerId !== ownerId) {
-    console.error("知識提案的來源訊息不屬於這個帳號，略過摘要", messageId, ownerId);
-    return null;
-  }
-  const content = (data.content as string | null) ?? "";
-  return content ? content.slice(0, SOURCE_EXCERPT_MAX_CHARS) : null;
-}
-
 // 寫進 knowledge_proposals，不動 knowledge_items/decisions/knowledge_links 任何一張正式表——
 // 要變正式資料一定要靠使用者自己呼叫 accept_knowledge_proposal()（0019_shared_knowledge.sql）。
 export async function recordKnowledgeProposal(
@@ -162,8 +138,11 @@ export async function recordKnowledgeProposal(
     if (proposalType === "decision" && input.potential_conflict_with) {
       payload.potential_conflict_with = input.potential_conflict_with;
     }
-    const sourceExcerpt = await fetchOwnedSourceExcerpt(admin, params.ownerId, params.sourceMessageId);
-    if (sourceExcerpt) payload.source_excerpt = sourceExcerpt;
+    // 不在這裡放來源摘要：accept_knowledge_proposal()（0019_shared_knowledge.sql 的
+    // insert_message_source_if_owned()）確認提案時會直接重新從資料庫讀取 sourceMessageId
+    // 當下的真實內容，不信任 payload／RPC edits 傳進來的任何文字（PR #44 第二輪 review
+    // 修正：呼叫 RPC 的使用者可以自己指定 edits，若這裡先把摘要放進 payload、RPC 又相信
+    // 它，等於給了一個能捏造「已驗證」內容的管道）。
   }
 
   const { error } = await admin.from("knowledge_proposals").insert({
