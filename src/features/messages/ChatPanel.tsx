@@ -1,7 +1,7 @@
 import { useMemo, useRef, useEffect, useLayoutEffect, useState } from "react";
 import { useMessages, useLoadOlderMessages } from "./useMessages";
 import { useAgents } from "./useAgents";
-import { useAgentRunStatus } from "./useAgentRunStatus";
+import { useAgentRunStatus, useStopAgentRun } from "./useAgentRunStatus";
 import { MessageBubble } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import type { AgentRow } from "../../types/database";
@@ -12,7 +12,8 @@ const LOAD_MORE_SCROLL_THRESHOLD = 60;
 export function ChatPanel({ roomId }: { roomId: string }) {
   const { data: messages, isLoading } = useMessages(roomId);
   const { data: agents } = useAgents(roomId);
-  const runningAgentIds = useAgentRunStatus(roomId);
+  const runningRuns = useAgentRunStatus(roomId);
+  const stopRun = useStopAgentRun();
   const loadOlder = useLoadOlderMessages(roomId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -63,9 +64,9 @@ export function ChatPanel({ roomId }: { roomId: string }) {
     });
   }
 
-  const runningNames = (agents ?? [])
-    .filter((a) => runningAgentIds.has(a.id))
-    .map((a) => a.name);
+  const runningAgents = (agents ?? [])
+    .filter((a) => runningRuns.has(a.id))
+    .map((a) => ({ agent: a, runId: runningRuns.get(a.id)! }));
 
   return (
     <div className="flex h-full flex-col">
@@ -75,9 +76,19 @@ export function ChatPanel({ roomId }: { roomId: string }) {
         {messages?.map((message) => (
           <MessageBubble key={message.id} message={message} agentsById={agentsById} />
         ))}
-        {runningNames.length > 0 && (
-          <div className="text-xs text-slate-400">{runningNames.join("、")} 回覆中…</div>
-        )}
+        {runningAgents.map(({ agent, runId }) => (
+          <div key={agent.id} className="flex items-center gap-2 text-xs text-slate-400">
+            <span>{agent.name} 回覆中…</span>
+            <button
+              type="button"
+              onClick={() => stopRun.mutate(runId)}
+              disabled={stopRun.isPending && stopRun.variables === runId}
+              className="rounded-full border border-slate-300 px-2 py-0.5 text-slate-500 hover:border-slate-500 hover:text-slate-700 disabled:opacity-50"
+            >
+              停止
+            </button>
+          </div>
+        ))}
         <div ref={bottomRef} />
       </div>
       <MessageComposer roomId={roomId} agents={agents ?? []} />

@@ -133,7 +133,11 @@ export function createAnthropicProvider(apiKey: string): AIProvider {
         toolCall: toolUseBlock ? { name: toolUseBlock.name, input: toolUseBlock.input } : undefined,
       };
     },
-    async generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage> {
+    async generateStream(
+      request: GenerateRequest,
+      onDelta: (textDelta: string) => void,
+      signal?: AbortSignal,
+    ): Promise<StreamUsage> {
       const res = await fetch(ANTHROPIC_API_URL, {
         method: "POST",
         headers: {
@@ -149,6 +153,7 @@ export function createAnthropicProvider(apiKey: string): AIProvider {
           tools: buildAnthropicTools(request.tools),
           stream: true,
         }),
+        signal,
       });
 
       if (!res.ok || !res.body) {

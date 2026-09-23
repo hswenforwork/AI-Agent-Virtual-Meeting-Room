@@ -199,6 +199,7 @@ AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類�
 npx supabase@latest link --project-ref <你的專案 ref>
 npx supabase@latest functions deploy chat-dispatch
 npx supabase@latest functions deploy agent-run
+npx supabase@latest functions deploy agent-run-stop
 npx supabase@latest functions deploy approval-decide
 npx supabase@latest functions deploy file-register
 npx supabase@latest functions deploy worker-task-start
