@@ -9,13 +9,13 @@ import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { friendlyProviderError, jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin } from "../_shared/supabaseAdmin.ts";
 import { createProviderAdapter } from "../_shared/providers/index.ts";
-import { ProviderHttpError, type AIProvider, type ChatMessage } from "../_shared/providers/types.ts";
+import { ProviderHttpError, type ChatMessage } from "../_shared/providers/types.ts";
 import { getUserProviderKey, type ProviderSlug } from "../_shared/vault.ts";
-import { buildWorkspaceContext } from "../_shared/workspaceContext.ts";
+import { buildWorkspaceContext, resolveWorkspaceRoomIds } from "../_shared/workspaceContext.ts";
+import { applyWorkspaceWrite, classifyMessage, fetchWorkspaceMatchItems } from "../_shared/workspaceWrite.ts";
 
 const RECENT_MESSAGE_LIMIT = 24;
 const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
-const CLASSIFY_MAX_OUTPUT_TOKENS = 200;
 // brainstorms/2026-09-22-streaming-replies.md Q3：每 200ms 節流一次 UPDATE，避免逐字都寫 DB
 const STREAM_UPDATE_INTERVAL_MS = 200;
 const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
@@ -23,46 +23,6 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderSlug, string> = {
   openai: Deno.env.get("DEFAULT_GPT_MODEL") ?? "gpt-5.1",
   google: Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash",
 };
-
-const CLASSIFY_SYSTEM_PROMPT = `你負責判斷使用者最新這則訊息，對「工作型代理」來說是「任務」還是「單純問題」。
-- 「任務」：需要實際動手做事才能完成——寫程式、修 bug、跑測試、產生檔案、部署、大規模搜尋整理資料等，做完會有具體產出或變更。
-- 「問題」：單純想知道答案、討論、閒聊、請教意見，不需要代理真的動手操作環境。
-只能回傳一行 JSON，不要有任何其他文字，格式固定為：
-{"type":"task","summary":"一句話描述這個任務要做什麼"} 或 {"type":"question"}`;
-
-interface ClassifyResult {
-  type: "task" | "question";
-  summary: string;
-  usage: { inputTokens: number; outputTokens: number };
-}
-
-async function classifyTaskOrQuestion(
-  provider: AIProvider,
-  model: string,
-  history: ChatMessage[],
-): Promise<ClassifyResult> {
-  const zeroUsage = { inputTokens: 0, outputTokens: 0 };
-  if (history.length === 0) return { type: "question", summary: "", usage: zeroUsage };
-
-  try {
-    const result = await provider.generate({
-      systemPrompt: CLASSIFY_SYSTEM_PROMPT,
-      messages: history,
-      model,
-      maxOutputTokens: CLASSIFY_MAX_OUTPUT_TOKENS,
-    });
-    const match = result.text.match(/\{.*\}/s);
-    if (!match) return { type: "question", summary: "", usage: result.usage };
-    const parsed = JSON.parse(match[0]);
-    if (parsed?.type === "task" && typeof parsed.summary === "string" && parsed.summary.trim()) {
-      return { type: "task", summary: parsed.summary.trim(), usage: result.usage };
-    }
-    return { type: "question", summary: "", usage: result.usage };
-  } catch (err) {
-    console.error("任務分類失敗，視為一般問題", err);
-    return { type: "question", summary: "", usage: zeroUsage };
-  }
-}
 
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
@@ -173,17 +133,23 @@ Deno.serve(async (req) => {
       .maybeSingle();
     const resolvedModel = roomModel ?? keyRow?.selected_model ?? DEFAULT_MODEL_BY_PROVIDER[providerSlug];
 
-    // 任務 vs 問題判斷（brainstorms/2026-09-18-agentic-sandbox-workers.md Q6）：
-    // AI 自動判斷這則訊息是單純問題還是任務；是任務的話先出任務卡片問使用者要不要開始執行，
-    // 不直接生成一般聊天回覆。判斷失敗（解析不出 JSON）一律當作「問題」，維持原本聊天行為不中斷。
-    // 工作型代理（Managed Agents）目前只支援 Claude/Anthropic 這條路徑，GPT/Gemini 一律當作
-    // 一般問題直接回覆，不進行任務分類、也不會產生任務卡片。
-    const classification =
-      providerSlug === "anthropic"
-        ? await classifyTaskOrQuestion(provider, resolvedModel, history)
-        : { type: "question" as const, summary: "", usage: { inputTokens: 0, outputTokens: 0 } };
+    // 意圖分類（brainstorms/2026-09-18-agentic-sandbox-workers.md Q6、
+    // brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q4/Q7）：AI 自動判斷這則訊息
+    // 是單純問題、需要動手做的任務、還是要直接寫記事本/待辦。三家供應商都會跑這個分類呼叫，
+    // 只是工作型代理（Managed Agents）目前只支援 Claude/Anthropic，GPT/Gemini 不會分類出
+    // 「task」（allowTask=false 時分類函式本身就不會回傳 task）。判斷失敗一律當作「問題」，
+    // 維持原本聊天行為不中斷。
+    const roomIds = await resolveWorkspaceRoomIds(admin, run.room_id);
+    const matchItems = await fetchWorkspaceMatchItems(admin, roomIds);
+    const classification = await classifyMessage(
+      provider,
+      resolvedModel,
+      history,
+      providerSlug === "anthropic",
+      matchItems,
+    );
 
-    if (classification.type === "task") {
+    if (classification.kind === "task") {
       // 先建立 worker_tasks 拿到 id，task_card 訊息一次到位就帶上 workerTaskId，
       // 不要「先 insert 訊息、再 update 補 workerTaskId」——前端 Realtime 訂閱的是同一張訊息，
       // 這個 id 補上的動作如果晚於前端第一次收到 INSERT，使用者看到的卡片就會缺 workerTaskId，
@@ -228,6 +194,36 @@ Deno.serve(async (req) => {
       await upsertUsage(admin, today, run.room_id, agent.id, classification.usage);
 
       return new Response(JSON.stringify({ ok: true, kind: "task_card" }), { headers });
+    }
+
+    if (classification.kind === "workspace_write") {
+      // Q5：只回一句短確認，不額外呼叫 generate() 生成一段完整聊天回覆
+      let confirmationText: string;
+      try {
+        confirmationText = await applyWorkspaceWrite(admin, run.room_id, triggeringUserId, classification.write);
+      } catch (err) {
+        console.error("寫入記事本/待辦失敗", err);
+        confirmationText = "記錄失敗，請稍後再試一次。";
+      }
+
+      await admin.from("messages").insert({
+        room_id: run.room_id,
+        sender_type: "agent",
+        sender_agent_id: agent.id,
+        content: confirmationText,
+        status: "completed",
+        reply_to_id: run.trigger_message_id,
+      });
+
+      await admin
+        .from("agent_runs")
+        .update({ status: "completed", usage_json: classification.usage, updated_at: new Date().toISOString() })
+        .eq("id", runId);
+
+      const today = new Date().toISOString().slice(0, 10);
+      await upsertUsage(admin, today, run.room_id, agent.id, classification.usage);
+
+      return new Response(JSON.stringify({ ok: true, kind: "workspace_write" }), { headers });
     }
 
     // 串流輸出（brainstorms/2026-09-22-streaming-replies.md）：先插入一則空白的

@@ -1,20 +1,29 @@
 // 待辦事項：低風險寫入，直接透過 SDK + RLS CRUD（訪談 Q12）。
+// brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1：待辦跨聊天室共用，
+// 不再依 room_id 篩選列表（RLS 已經把可見範圍限制在「使用者自己名下所有房間」），
+// 只有新增時還需要 roomId 當作這筆待辦的「來源房間」（room_id 欄位本身沒有拿掉）。
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabase";
 import type { TaskRow, TaskStatus } from "../../types/database";
 
-export function useTasks(roomId: string) {
+export interface TaskWithRoom extends TaskRow {
+  roomName: string | null;
+}
+
+export function useTasks() {
   return useQuery({
-    queryKey: ["tasks", roomId],
-    queryFn: async (): Promise<TaskRow[]> => {
+    queryKey: ["tasks"],
+    queryFn: async (): Promise<TaskWithRoom[]> => {
       const { data, error } = await supabase
         .from("tasks")
-        .select("*")
-        .eq("room_id", roomId)
+        .select("*, rooms(name)")
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []).map(({ rooms, ...task }) => ({
+        ...task,
+        roomName: (rooms as { name: string } | null)?.name ?? null,
+      }));
     },
   });
 }
@@ -27,11 +36,11 @@ export function useCreateTask(roomId: string) {
       const { error } = await supabase.from("tasks").insert({ room_id: roomId, title });
       if (error) throw error;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks", roomId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
   });
 }
 
-export function useUpdateTaskStatus(roomId: string) {
+export function useUpdateTaskStatus() {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -42,11 +51,11 @@ export function useUpdateTaskStatus(roomId: string) {
         .eq("id", id);
       if (error) throw error;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks", roomId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
   });
 }
 
-export function useDeleteTask(roomId: string) {
+export function useDeleteTask() {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -54,6 +63,6 @@ export function useDeleteTask(roomId: string) {
       const { error } = await supabase.from("tasks").delete().eq("id", id);
       if (error) throw error;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks", roomId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
   });
 }

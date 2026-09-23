@@ -1,8 +1,7 @@
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Download, Trash2, Upload } from "lucide-react";
-import { useFiles, useRequestDeleteFile, useUploadFile, getFileDownloadUrl } from "./useFiles";
-import type { FileRow } from "../../types/database";
+import { useFiles, useRequestDeleteFile, useUploadFile, getFileDownloadUrl, type FileWithRoom } from "./useFiles";
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -10,10 +9,12 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// 檔案夾現在跨聊天室共用（brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1），
+// roomId 只在「新增」時用來當這個檔案的來源房間，列表本身不再依房間篩選。
 export function FilesPanel({ roomId }: { roomId: string }) {
-  const { data: files, isLoading } = useFiles(roomId);
+  const { data: files, isLoading } = useFiles();
   const uploadFile = useUploadFile(roomId);
-  const requestDelete = useRequestDeleteFile(roomId);
+  const requestDelete = useRequestDeleteFile();
   const inputRef = useRef<HTMLInputElement>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
 
@@ -29,7 +30,7 @@ export function FilesPanel({ roomId }: { roomId: string }) {
     }
   }
 
-  async function handleDownload(file: FileRow) {
+  async function handleDownload(file: FileWithRoom) {
     setDownloading(file.id);
     try {
       const url = await getFileDownloadUrl(file.object_path);
@@ -41,10 +42,10 @@ export function FilesPanel({ roomId }: { roomId: string }) {
     }
   }
 
-  async function handleDelete(file: FileRow) {
+  async function handleDelete(file: FileWithRoom) {
     if (!window.confirm(`確定要刪除「${file.name}」嗎？這是難復原的操作，需要再次確認。`)) return;
     try {
-      await requestDelete.mutateAsync(file.id);
+      await requestDelete.mutateAsync({ fileId: file.id, roomId: file.room_id });
       toast.success("已刪除");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "刪除失敗");
@@ -77,7 +78,14 @@ export function FilesPanel({ roomId }: { roomId: string }) {
             className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2"
           >
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm">{file.name}</div>
+              <div className="flex items-center gap-1.5">
+                <div className="truncate text-sm">{file.name}</div>
+                {file.roomName && (
+                  <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                    來自：{file.roomName}
+                  </span>
+                )}
+              </div>
               <div className="text-xs text-slate-400">{formatSize(file.size_bytes)}</div>
             </div>
             <button

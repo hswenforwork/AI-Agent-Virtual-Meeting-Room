@@ -1,23 +1,18 @@
 import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { useCreateNote, useDeleteNote, useNotes, useUpdateNote } from "./useNotes";
-import type { NoteRow } from "../../types/database";
+import { useCreateNote, useDeleteNote, useNotes, useUpdateNote, type NoteWithRoom } from "./useNotes";
 
+// 記事本現在跨聊天室共用（brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1），
+// roomId 只在「新增」時用來當這筆記事的來源房間，列表本身不再依房間篩選。
 export function NotesPanel({ roomId }: { roomId: string }) {
-  const { data: notes, isLoading } = useNotes(roomId);
+  const { data: notes, isLoading } = useNotes();
   const createNote = useCreateNote(roomId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const selectedNote = notes?.find((n) => n.id === selectedId) ?? null;
 
   if (selectedNote) {
-    return (
-      <NoteEditor
-        roomId={roomId}
-        note={selectedNote}
-        onBack={() => setSelectedId(null)}
-      />
-    );
+    return <NoteEditor note={selectedNote} onBack={() => setSelectedId(null)} />;
   }
 
   return (
@@ -41,7 +36,14 @@ export function NotesPanel({ roomId }: { roomId: string }) {
             onClick={() => setSelectedId(note.id)}
             className="block w-full border-b border-slate-100 px-3 py-2 text-left hover:bg-slate-50"
           >
-            <div className="truncate text-sm font-medium">{note.title || "未命名記事"}</div>
+            <div className="flex items-center gap-1.5">
+              <div className="truncate text-sm font-medium">{note.title || "未命名記事"}</div>
+              {note.roomName && (
+                <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                  來自：{note.roomName}
+                </span>
+              )}
+            </div>
             <div className="truncate text-xs text-slate-400">{note.content || "（沒有內容）"}</div>
           </button>
         ))}
@@ -50,19 +52,11 @@ export function NotesPanel({ roomId }: { roomId: string }) {
   );
 }
 
-function NoteEditor({
-  roomId,
-  note,
-  onBack,
-}: {
-  roomId: string;
-  note: NoteRow;
-  onBack: () => void;
-}) {
+function NoteEditor({ note, onBack }: { note: NoteWithRoom; onBack: () => void }) {
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
-  const updateNote = useUpdateNote(roomId);
-  const deleteNote = useDeleteNote(roomId);
+  const updateNote = useUpdateNote();
+  const deleteNote = useDeleteNote();
 
   function handleSave() {
     updateNote.mutate({ id: note.id, title, content });
@@ -79,9 +73,16 @@ function NoteEditor({
         <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-700">
           ← 返回列表
         </button>
-        <button onClick={handleDelete} className="text-slate-400 hover:text-red-500">
-          <Trash2 size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          {note.roomName && (
+            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+              來自：{note.roomName}
+            </span>
+          )}
+          <button onClick={handleDelete} className="text-slate-400 hover:text-red-500">
+            <Trash2 size={16} />
+          </button>
+        </div>
       </div>
       <input
         value={title}
