@@ -18,6 +18,13 @@ import { supabaseAdmin, supabaseAsUser } from "../_shared/supabaseAdmin.ts";
 const DEFAULT_REVIEW_INTERVAL_DAYS = 180;
 const STALE_PROPOSAL_DAYS = 14;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// 17 項修正計劃項目 14：PostgREST／Supabase 對單次查詢預設有回傳筆數上限（專案設定，
+// 常見預設是 1000），舊版本這裡的五張表查詢完全沒有分頁，資料量一旦超過那個上限，
+// 就會被「悄悄截斷」——稽核只看到前面一部分資料，卻還是照常產生一份「掃過了」的報告，
+// 完全沒有任何跡象顯示其實沒掃完。PAGE_SIZE 故意設得比那個常見上限小很多，
+// 用 .range() 分頁掃到「這一頁回傳筆數 < PAGE_SIZE」為止，確保掃描結果不受那個上限影響，
+// 不管帳號名下這張表實際有幾筆都能掃完整。
+const PAGE_SIZE = 500;
 
 type Severity = "confirmed" | "needs_review" | "suggestion";
 type SupabaseLikeClient = ReturnType<typeof supabaseAdmin> | ReturnType<typeof supabaseAsUser>;
@@ -88,25 +95,103 @@ type AuditResult =
   | { ok: true; body: Record<string, unknown> }
   | { ok: false; status: number; code: string; message: string };
 
+interface PaginatedFetch<T> {
+  rows: T[];
+  scanned: number;
+  pages: number;
+  error: { table: string; message: string } | null;
+}
+
+// 分頁掃完一整張表（限定 owner_id），不依賴 PostgREST/Supabase 專案設定的單次查詢筆數
+// 上限——每一頁固定用 PAGE_SIZE，掃到某一頁回傳筆數 < PAGE_SIZE 就代表已經到底。
+// 用 id 排序只是為了讓分頁本身穩定（避免同一頁重複或漏頁），不代表任何業務意義上的順序。
+async function fetchAllPaginated<T>(
+  client: SupabaseLikeClient,
+  table: string,
+  columns: string,
+  ownerId: string,
+): Promise<PaginatedFetch<T>> {
+  const rows: T[] = [];
+  let page = 0;
+  for (;;) {
+    const from = page * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await client.from(table).select(columns).eq("owner_id", ownerId).order("id", { ascending: true }).range(from, to);
+    if (error) {
+      return { rows, scanned: rows.length, pages: page + 1, error: { table, message: error.message } };
+    }
+    const batch = (data ?? []) as T[];
+    rows.push(...batch);
+    page += 1;
+    if (batch.length < PAGE_SIZE) break;
+  }
+  return { rows, scanned: rows.length, pages: page, error: null };
+}
+
+interface AuditKnowledgeItemRow {
+  id: string;
+  title: string;
+  category: string;
+  status: string;
+  expires_at: string | null;
+  review_interval_days: number | null;
+  updated_at: string;
+}
+interface AuditDecisionRow {
+  id: string;
+  title: string;
+  status: string;
+  decided_at: string;
+  updated_at: string;
+}
+interface AuditSourceRow {
+  id: string;
+  subject_type: string;
+  subject_id: string;
+  status: string;
+  verified: boolean;
+}
+interface AuditLinkRow {
+  id: string;
+  from_type: string;
+  from_id: string;
+  to_type: string;
+  to_id: string;
+  relation: string;
+  status: string;
+}
+interface AuditProposalRow {
+  id: string;
+  proposal_type: string;
+  status: string;
+  created_at: string;
+}
+
 async function runAudit(client: SupabaseLikeClient, ownerId: string, triggeredBy: "manual" | "schedule"): Promise<AuditResult> {
   const [itemsRes, decisionsRes, sourcesRes, linksRes, proposalsRes] = await Promise.all([
-    client
-      .from("knowledge_items")
-      .select("id, title, category, status, expires_at, review_interval_days, updated_at")
-      .eq("owner_id", ownerId),
-    client.from("decisions").select("id, title, status, decided_at, updated_at").eq("owner_id", ownerId),
-    client.from("knowledge_sources").select("id, subject_type, subject_id, status, verified").eq("owner_id", ownerId),
-    client
-      .from("knowledge_links")
-      .select("id, from_type, from_id, to_type, to_id, relation, status")
-      .eq("owner_id", ownerId),
-    client.from("knowledge_proposals").select("id, proposal_type, status, created_at").eq("owner_id", ownerId),
+    fetchAllPaginated<AuditKnowledgeItemRow>(
+      client,
+      "knowledge_items",
+      "id, title, category, status, expires_at, review_interval_days, updated_at",
+      ownerId,
+    ),
+    fetchAllPaginated<AuditDecisionRow>(client, "decisions", "id, title, status, decided_at, updated_at", ownerId),
+    fetchAllPaginated<AuditSourceRow>(client, "knowledge_sources", "id, subject_type, subject_id, status, verified", ownerId),
+    fetchAllPaginated<AuditLinkRow>(
+      client,
+      "knowledge_links",
+      "id, from_type, from_id, to_type, to_id, relation, status",
+      ownerId,
+    ),
+    fetchAllPaginated<AuditProposalRow>(client, "knowledge_proposals", "id, proposal_type, status, created_at", ownerId),
   ]);
 
-  // PR #44 review 修正：原本任何一個查詢失敗都會被 `?? []` 悄悄吞掉，變成「這張表沒有
-  // 任何資料」，讓稽核在真正的問題（例如某張表讀取失敗）存在時反而生出一份「沒有發現
-  // 問題」的報告，比沒有報告更危險。現在只要有任一查詢出錯，整次稽核直接失敗、不寫入
-  // 任何報告，讓使用者知道這次檢查沒有真的跑完，而不是誤以為系統一切正常。
+  // PR #44 review 修正（第一輪）＋項目 14 修正：原本任何一個查詢失敗都會被 `?? []` 悄悄
+  // 吞掉，變成「這張表沒有任何資料」；項目 14 之前的版本雖然會回報失敗，但整張表沒有分頁，
+  // 資料量超過 PostgREST 的單次查詢筆數上限時會被悄悄截斷、完全不會報錯，稽核照常產生一份
+  // 「掃過了」的報告，卻其實只看到部分資料。現在改成逐頁掃描，任一頁查詢出錯，或掃描過程
+  // 中斷，整次稽核直接失敗、不寫入任何報告；正常掃完時，每張表實際掃描到的筆數也會寫進
+  // 報告的 stats.scan，讓使用者／自己都能事後確認掃描是不是真的完整，不是只憑筆數猜測。
   const queryResults = [
     { name: "knowledge_items", res: itemsRes },
     { name: "decisions", res: decisionsRes },
@@ -116,20 +201,30 @@ async function runAudit(client: SupabaseLikeClient, ownerId: string, triggeredBy
   ];
   const failed = queryResults.filter((q) => q.res.error);
   if (failed.length > 0) {
-    for (const f of failed) console.error("knowledge-audit 查詢失敗", f.name, f.res.error);
+    for (const f of failed) console.error("knowledge-audit 查詢失敗", f.name, f.res.error, "已掃描", f.res.scanned, "筆");
     return {
       ok: false,
       status: 500,
       code: "audit_query_failed",
-      message: `稽核未完成：${failed.map((f) => f.name).join("、")} 讀取失敗，沒有產生報告，請稍後重試。`,
+      message: `稽核未完成：${failed
+        .map((f) => `${f.name}（已掃描 ${f.res.scanned} 筆時讀取失敗）`)
+        .join("、")}，沒有產生報告，請稍後重試。`,
     };
   }
 
-  const items = itemsRes.data ?? [];
-  const decisions = decisionsRes.data ?? [];
-  const sources = sourcesRes.data ?? [];
-  const links = linksRes.data ?? [];
-  const proposals = proposalsRes.data ?? [];
+  const scanStats = {
+    knowledge_items: { scanned: itemsRes.scanned, pages: itemsRes.pages },
+    decisions: { scanned: decisionsRes.scanned, pages: decisionsRes.pages },
+    knowledge_sources: { scanned: sourcesRes.scanned, pages: sourcesRes.pages },
+    knowledge_links: { scanned: linksRes.scanned, pages: linksRes.pages },
+    knowledge_proposals: { scanned: proposalsRes.scanned, pages: proposalsRes.pages },
+  };
+
+  const items = itemsRes.rows;
+  const decisions = decisionsRes.rows;
+  const sources = sourcesRes.rows;
+  const links = linksRes.rows;
+  const proposals = proposalsRes.rows;
 
   const findings: Finding[] = [];
   const now = Date.now();
@@ -279,6 +374,9 @@ async function runAudit(client: SupabaseLikeClient, ownerId: string, triggeredBy
     findings_confirmed: findings.filter((f) => f.severity === "confirmed").length,
     findings_needs_review: findings.filter((f) => f.severity === "needs_review").length,
     findings_suggestion: findings.filter((f) => f.severity === "suggestion").length,
+    // 項目 14：每張表實際掃描到的筆數與分頁數，讓報告本身就能證明「這次是真的掃完整張表」，
+    // 不是被 PostgREST 的預設筆數上限悄悄截斷卻沒人發現。
+    scan: scanStats,
   };
 
   const summary =

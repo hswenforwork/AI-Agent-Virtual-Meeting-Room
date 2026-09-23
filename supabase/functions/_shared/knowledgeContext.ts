@@ -19,9 +19,15 @@ const KNOWLEDGE_MAX_COUNT = 5;
 const KNOWLEDGE_BODY_PREVIEW_CHARS = 300;
 const DECISION_MAX_COUNT = 5;
 const DECISION_TEXT_PREVIEW_CHARS = 300;
-// 候選池：先撈比實際要用的上限更多一點筆數，才有東西可以依關鍵字排序，不是每次都只看
-// 最新 5 筆——但也不能撈全部（帳號用久了知識會愈存愈多），設一個合理的候選池上限。
-const CANDIDATE_POOL_SIZE = 30;
+// 17 項修正計劃項目 13 修正：候選池不再是「最近更新的 N 筆」——舊版本先撈最近更新的
+// 30 筆才在這裡比對關鍵字，超過這個範圍的舊知識/決策永遠進不了候選池，就算內容完全
+// 符合這次對話也一樣。現在改成先讓資料庫用（0020 migration 加的 trigram GIN 索引）
+// ILIKE 篩出整個帳號範圍內「標題或內容真的包含至少一個關鍵字」的列，MATCHED_POOL_CAP
+// 只是避免單次查詢把帳號裡所有符合關鍵字的資料整批撈出來的保守上限，不是「只看最近幾筆」
+// 這種會漏掉真正相關資料的限制。FALLBACK_POOL_SIZE 只用在完全沒有關鍵字可比對、或關鍵字
+// 比對不到任何一筆的情況，退回依更新時間排序，避免完全沒有背景可用。
+const MATCHED_POOL_CAP = 200;
+const FALLBACK_POOL_SIZE = 30;
 // 每則知識/決策最多附幾筆「可引用」的來源——太多會把提示詞灌爆，這裡刻意保守。
 const SOURCE_MAX_PER_SUBJECT = 2;
 // 關聯（knowledge_links）最多附幾條，矛盾/依賴/取代優先，其餘用 related/supports 補滿。
@@ -55,6 +61,7 @@ interface KnowledgeItemRow {
   body: string;
   category: string;
   updated_at: string;
+  expires_at: string | null;
 }
 
 interface DecisionRow {
@@ -117,50 +124,92 @@ function overlapScore(keywords: Set<string>, haystack: string): number {
   return score;
 }
 
+// PostgREST 的 .or() 語法用逗號分隔多個 column.op.value 條件、句點分隔欄位/運算子/值，
+// 關鍵字本身如果含有這些字元會弄壞整個 filter 字串；extractKeywords() 已經用標點斷詞，
+//理論上不會出現逗號/句點/括號，這裡再擋一次當防禦，遇到就整個關鍵字跳過（不比對，
+// 不是讓它弄壞查詢）。ILIKE 的萬用字元 % 和 _ 也跳脫掉，避免使用者訊息剛好帶這兩個
+// 符號時被誤解成萬用字元。
+function sanitizeKeywordForIlike(kw: string): string | null {
+  if (/[,.()]/.test(kw)) return null;
+  return kw.replace(/[%_\\]/g, (c) => `\\${c}`);
+}
+
 async function fetchRelevantKnowledgeItems(
   admin: AdminClient,
   ownerId: string,
   keywords: Set<string>,
-): Promise<KnowledgeItemRow[]> {
-  const { data } = await admin
-    .from("knowledge_items")
-    .select("id, title, body, category, updated_at, expires_at")
-    .eq("owner_id", ownerId)
-    .eq("status", "active")
-    .order("updated_at", { ascending: false })
-    .limit(CANDIDATE_POOL_SIZE);
+): Promise<{ rows: KnowledgeItemRow[]; candidateCount: number; usedKeywordSearch: boolean }> {
+  const safeKeywords = [...keywords].map(sanitizeKeywordForIlike).filter((k): k is string => k !== null);
+  const baseQuery = () =>
+    admin
+      .from("knowledge_items")
+      .select("id, title, body, category, updated_at, expires_at")
+      .eq("owner_id", ownerId)
+      .eq("status", "active");
 
-  const notExpired = (data ?? []).filter((n) => !n.expires_at || new Date(n.expires_at) > new Date());
+  let data: KnowledgeItemRow[] = [];
+  let usedKeywordSearch = false;
+  if (safeKeywords.length > 0) {
+    const orConditions = safeKeywords.flatMap((kw) => [`title.ilike.%${kw}%`, `body.ilike.%${kw}%`]).join(",");
+    const { data: matched } = await baseQuery()
+      .or(orConditions)
+      .order("updated_at", { ascending: false })
+      .limit(MATCHED_POOL_CAP);
+    data = (matched ?? []) as KnowledgeItemRow[];
+    usedKeywordSearch = true;
+  }
+  if (data.length === 0) {
+    // 沒有關鍵字可比對，或整個帳號都沒有任何一筆符合關鍵字——退回依更新時間排序的
+    // 少量候選，至少讓模型看得到一點背景，不是完全沒有上下文。
+    const { data: fallback } = await baseQuery().order("updated_at", { ascending: false }).limit(FALLBACK_POOL_SIZE);
+    data = (fallback ?? []) as KnowledgeItemRow[];
+    usedKeywordSearch = false;
+  }
+
+  const notExpired = data.filter((n) => !n.expires_at || new Date(n.expires_at) > new Date());
   const ranked = notExpired
-    .map((n) => ({ row: n as KnowledgeItemRow, score: overlapScore(keywords, `${n.title} ${n.body}`) }))
+    .map((n) => ({ row: n, score: overlapScore(keywords, `${n.title} ${n.body}`) }))
     .sort((a, b) => b.score - a.score || new Date(b.row.updated_at).getTime() - new Date(a.row.updated_at).getTime());
 
-  const hasAnyMatch = ranked.some((r) => r.score > 0);
-  const chosen = hasAnyMatch ? ranked.filter((r) => r.score > 0) : ranked;
-  return chosen.slice(0, KNOWLEDGE_MAX_COUNT).map((r) => r.row);
+  return { rows: ranked.slice(0, KNOWLEDGE_MAX_COUNT).map((r) => r.row), candidateCount: data.length, usedKeywordSearch };
 }
 
 async function fetchRelevantDecisions(
   admin: AdminClient,
   ownerId: string,
   keywords: Set<string>,
-): Promise<DecisionRow[]> {
+): Promise<{ rows: DecisionRow[]; candidateCount: number; usedKeywordSearch: boolean }> {
+  const safeKeywords = [...keywords].map(sanitizeKeywordForIlike).filter((k): k is string => k !== null);
   // 只拿 active（已被取代的決策不會進系統提示詞，見 handle_decision_supersede() trigger）。
-  const { data } = await admin
-    .from("decisions")
-    .select("id, title, decision_text, decided_at, updated_at, supersedes_id")
-    .eq("owner_id", ownerId)
-    .eq("status", "active")
-    .order("decided_at", { ascending: false })
-    .limit(CANDIDATE_POOL_SIZE);
+  const baseQuery = () =>
+    admin
+      .from("decisions")
+      .select("id, title, decision_text, decided_at, updated_at, supersedes_id")
+      .eq("owner_id", ownerId)
+      .eq("status", "active");
 
-  const ranked = (data ?? [])
-    .map((d) => ({ row: d as DecisionRow, score: overlapScore(keywords, `${d.title} ${d.decision_text}`) }))
+  let data: DecisionRow[] = [];
+  let usedKeywordSearch = false;
+  if (safeKeywords.length > 0) {
+    const orConditions = safeKeywords.flatMap((kw) => [`title.ilike.%${kw}%`, `decision_text.ilike.%${kw}%`]).join(",");
+    const { data: matched } = await baseQuery()
+      .or(orConditions)
+      .order("decided_at", { ascending: false })
+      .limit(MATCHED_POOL_CAP);
+    data = (matched ?? []) as DecisionRow[];
+    usedKeywordSearch = true;
+  }
+  if (data.length === 0) {
+    const { data: fallback } = await baseQuery().order("decided_at", { ascending: false }).limit(FALLBACK_POOL_SIZE);
+    data = (fallback ?? []) as DecisionRow[];
+    usedKeywordSearch = false;
+  }
+
+  const ranked = data
+    .map((d) => ({ row: d, score: overlapScore(keywords, `${d.title} ${d.decision_text}`) }))
     .sort((a, b) => b.score - a.score || new Date(b.row.decided_at).getTime() - new Date(a.row.decided_at).getTime());
 
-  const hasAnyMatch = ranked.some((r) => r.score > 0);
-  const chosen = hasAnyMatch ? ranked.filter((r) => r.score > 0) : ranked;
-  return chosen.slice(0, DECISION_MAX_COUNT).map((r) => r.row);
+  return { rows: ranked.slice(0, DECISION_MAX_COUNT).map((r) => r.row), candidateCount: data.length, usedKeywordSearch };
 }
 
 // 前端用 HashRouter（src/main.tsx），畫面連結一律是 "#/rooms/{roomId}"（或加上
@@ -278,10 +327,25 @@ export async function buildKnowledgeContext(
   if (!ownerId) return "";
 
   const keywords = extractKeywords(recentText);
-  const [items, decisions] = await Promise.all([
+  const queryStartedAt = Date.now();
+  const [itemsResult, decisionsResult] = await Promise.all([
     fetchRelevantKnowledgeItems(admin, ownerId, keywords),
     fetchRelevantDecisions(admin, ownerId, keywords),
   ]);
+  const items = itemsResult.rows;
+  const decisions = decisionsResult.rows;
+  // 項目 13 KPI：記錄查詢延遲與候選量，方便事後確認沒有不小心又退化成「無界查全部」或
+  // 「候選池小到漏掉真正相關的資料」。
+  console.log(
+    "knowledgeContext 檢索統計",
+    JSON.stringify({
+      query_ms: Date.now() - queryStartedAt,
+      knowledge_candidate_count: itemsResult.candidateCount,
+      knowledge_used_keyword_search: itemsResult.usedKeywordSearch,
+      decision_candidate_count: decisionsResult.candidateCount,
+      decision_used_keyword_search: decisionsResult.usedKeywordSearch,
+    }),
+  );
   if (items.length === 0 && decisions.length === 0) return "";
 
   const [itemSources, decisionSources, links] = await Promise.all([
