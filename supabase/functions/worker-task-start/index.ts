@@ -17,20 +17,22 @@ import {
   ManagedAgentsError,
   sendCustomToolResult,
   streamSessionEvents,
+  CONSULT_TOOL_NAME,
+  WRITE_TO_NOTEBOOK_TOOL_NAME,
   type CmaEvent,
 } from "../_shared/managedAgents.ts";
 import { consultGemini } from "../_shared/providers/gemini.ts";
 import { getUserProviderKey } from "../_shared/vault.ts";
 import { getOrCreateUserManagedAgent } from "../_shared/userManagedAgents.ts";
-import { buildWorkspaceContext } from "../_shared/workspaceContext.ts";
+import { buildWorkspaceContext, resolveWorkspaceOwnerId } from "../_shared/workspaceContext.ts";
+import { applyWorkspaceWrite, type WorkspaceWriteAction } from "../_shared/workspaceWrite.ts";
 
 type AdminClient = ReturnType<typeof supabaseAdmin>;
 
-// 代理的系統提示詞（角色設定、SUMMARY: 開頭慣例、consult_other_ai 使用時機）
-// 是 agent 設定本身的一部分，建立一次、可重複使用 —— 定義在 _shared/managedAgents.ts
-// 的 createManagedAgent()，每個使用者第一次用時建立一次，不是每次 session 都重送，
-// 這裡只需要知道工具名稱本身。
-const CONSULT_TOOL_NAME = "consult_other_ai";
+// 工具名稱本身從 _shared/managedAgents.ts 匯入（跟工具的實際定義同一個來源，避免兩邊
+// 字串各自維護一份、之後改名漏改）。代理的系統提示詞（角色設定、SUMMARY: 開頭慣例、
+// consult_other_ai／write_to_notebook 使用時機）也是定義在那邊的 createManagedAgent()／
+// createSession()，這裡只需要知道工具名稱本身，用來比對事件迴圈收到的 tool_use。
 const PROGRESS_LOG_MAX_ENTRIES = 6;
 // 工作型代理預設用比一般聊天更強的模型（opus），跟 agent-run 聊天用的 DEFAULT_CLAUDE_MODEL
 // 分開設定；使用者在「設定」頁選過模型的話，優先用使用者選的（brainstorms/2026-09-22-provider-model-selection.md Q8）。
@@ -59,7 +61,7 @@ Deno.serve(async (req) => {
 
     const { data: workerTask, error: workerTaskErr } = await admin
       .from("worker_tasks")
-      .select("id, room_id, agent_id, origin_message_id, task_card_message_id, task_summary, status")
+      .select("id, room_id, agent_id, origin_message_id, task_card_message_id, task_summary, status, needs_notebook_tool")
       .eq("id", workerTaskId)
       .single();
     if (workerTaskErr || !workerTask) return jsonError("找不到這個任務", 404, "not_found", headers);
@@ -135,6 +137,7 @@ Deno.serve(async (req) => {
         title: `任務：${workerTask.task_summary.slice(0, 80)}`,
         initialUserMessage: `任務描述：${workerTask.task_summary}\n\n使用者原始訊息：${originMessage?.content ?? ""}${workspaceContextBlock}`,
         githubRepo: githubRepoUrl && githubToken ? { url: githubRepoUrl, token: githubToken, branch: githubBranch } : undefined,
+        includeNotebookTool: workerTask.needs_notebook_tool,
       });
     } catch (err) {
       console.error("建立 Managed Agents session 失敗", err);
@@ -155,6 +158,11 @@ Deno.serve(async (req) => {
     }
 
     const geminiApiKey = await getUserProviderKey(admin, user.id, "google");
+    // write_to_notebook 工具寫進 notes/tasks 要用 owner_id（房間擁有者，不是觸發這次任務
+    // 的使用者），跟一般聊天的 workspace_write 同一套換算方式（brainstorms/2026-09-23-
+    // worker-agent-notebook-write.md）。沒有附帶這個工具的任務也順便查一次，反正很便宜，
+    // 不用另外判斷 needs_notebook_tool 才查。
+    const ownerId = await resolveWorkspaceOwnerId(admin, workerTask.room_id);
     const consumeSession = () =>
       runSessionToCompletion(admin, apiKey, geminiApiKey, {
         sessionId: session.id,
@@ -162,6 +170,8 @@ Deno.serve(async (req) => {
         roomId: workerTask.room_id,
         taskCardMessageId: workerTask.task_card_message_id,
         taskSummary: workerTask.task_summary,
+        ownerId,
+        userId: user.id,
       });
 
     // deno-lint-ignore no-undef
@@ -201,6 +211,12 @@ interface SessionContext {
   roomId: string;
   taskCardMessageId: string | null;
   taskSummary: string;
+  // write_to_notebook 工具用（brainstorms/2026-09-23-worker-agent-notebook-write.md）：
+  // ownerId 是記事本/待辦真正的歸屬（房間擁有者），userId 是按「開始執行」這個人，
+  // 對應到 applyWorkspaceWrite() 的 created_by。ownerId 理論上不會是 null（每個房間
+  // 一定有 owner_id），保留 null 只是防禦性處理，真的遇到就讓工具呼叫失敗並回報。
+  ownerId: string | null;
+  userId: string;
 }
 
 async function runSessionToCompletion(
@@ -236,6 +252,8 @@ async function runSessionToCompletion(
         case "agent.custom_tool_use": {
           if (event.name === CONSULT_TOOL_NAME) {
             await handleConsultOtherAi(admin, apiKey, geminiApiKey, ctx, event, pushProgress);
+          } else if (event.name === WRITE_TO_NOTEBOOK_TOOL_NAME) {
+            await handleWriteToNotebook(admin, apiKey, ctx, event, pushProgress);
           }
           break;
         }
@@ -324,6 +342,58 @@ async function handleConsultOtherAi(
     await sendCustomToolResult(apiKey, ctx.sessionId, event.id as string, resultText);
   } catch (err) {
     console.error("回傳 consult_other_ai 結果失敗", ctx.sessionId, err);
+  }
+}
+
+// write_to_notebook 工具（brainstorms/2026-09-23-worker-agent-notebook-write.md）：只有
+// 使用者原始訊息明確要求記錄，這個 session 才會附帶這個工具（見 createSession() 的
+// includeNotebookTool）。只支援新增一則新的記事/待辦（訪談 Q3），不支援修改既有項目；
+// 寫入失敗不讓整個任務算失敗，把失敗結果回傳給模型，由它自己在 SUMMARY 裡誠實說明
+// （訪談 Q6）。
+async function handleWriteToNotebook(
+  admin: AdminClient,
+  apiKey: string,
+  ctx: SessionContext,
+  event: CmaEvent,
+  pushProgress: (entry: string) => Promise<void>,
+) {
+  const input = (event.input ?? {}) as { kind?: string; title?: string; content?: string };
+  const toolUseId = event.id as string;
+
+  const sendResult = async (resultText: string) => {
+    try {
+      await sendCustomToolResult(apiKey, ctx.sessionId, toolUseId, resultText);
+    } catch (err) {
+      console.error("回傳 write_to_notebook 結果失敗", ctx.sessionId, err);
+    }
+  };
+
+  if (input.kind !== "note" && input.kind !== "task") {
+    await sendResult("寫入失敗：kind 必須是 note 或 task。");
+    return;
+  }
+  const title = input.title?.trim();
+  if (!title) {
+    await sendResult("寫入失敗：title 不能是空的。");
+    return;
+  }
+  if (!ctx.ownerId) {
+    await sendResult("寫入失敗：找不到這個房間的擁有者，沒辦法寫入記事本/待辦事項。");
+    return;
+  }
+
+  const write: WorkspaceWriteAction =
+    input.kind === "note"
+      ? { action: "create_note", title, content: input.content ?? "" }
+      : { action: "create_task", title };
+
+  try {
+    const confirmationText = await applyWorkspaceWrite(admin, ctx.roomId, ctx.ownerId, ctx.userId, write);
+    await pushProgress(confirmationText.slice(0, 300));
+    await sendResult(`${confirmationText}（已經是真的寫進資料庫的記事本/待辦事項，不是輸出檔案）`);
+  } catch (err) {
+    console.error("write_to_notebook 寫入失敗", ctx.sessionId, err);
+    await sendResult(`寫入失敗：${title} 沒有成功記進去，請在 SUMMARY 裡誠實說明這筆沒有記錄成功，不用重試。`);
   }
 }
 
@@ -448,10 +518,17 @@ async function filesToArtifacts(
         continue;
       }
 
+      // brainstorms/2026-09-23-worker-agent-notebook-write.md：files.owner_id 從
+      // migration 0012 開始是 not null、預設值是 auth.uid()——這裡是用 service_role
+      // 呼叫，auth.uid() 沒有登入 session 可用，一律是 null，這個 insert 從 0012 上線
+      // 之後其實一直都會直接違反 not null 約束而失敗（Storage 檔案本體有傳上去，
+      // 但資料庫這筆登記一直失敗，檔案夾自然永遠看不到）。明確帶上 owner_id 才會成功。
       const { data: fileRow, error: insertErr } = await admin
         .from("files")
         .insert({
           room_id: ctx.roomId,
+          owner_id: ctx.ownerId,
+          created_by: ctx.userId,
           bucket: "room-files",
           object_path: objectPath,
           name: outputFile.filename,

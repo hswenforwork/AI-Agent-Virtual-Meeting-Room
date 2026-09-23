@@ -48,6 +48,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0015_agent_run_cancel.sql`（停止 AI 回覆，見下方「附加設定」）
    - `supabase/migrations/0016_message_token_usage.sql`（訊息泡泡顯示 token 用量，見下方「附加設定」）
    - `supabase/migrations/0017_workspace_realtime.sql`（記事本/待辦/檔案夾即時更新，見下方「附加設定」）
+   - `supabase/migrations/0018_worker_task_notebook_tool.sql`（工作型代理寫進記事本/待辦事項，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -210,6 +211,19 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
 
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0017_workspace_realtime.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：工作型代理寫進記事本/待辦事項（選用但建議）
+
+原本工作型代理（沙盒任務）被要求「記進記事本」時，只能寫一個沙盒裡的檔案模擬，跟聊天室
+右側真正的記事本/待辦事項是兩回事。現在只要任務的原始訊息明確要求記錄（例如提到「記進
+記事本」），代理就會拿到一個新工具，真的把結果新增一則記事或待辦（只能新增，不能修改
+既有項目），跟一般聊天寫記事本走同一套邏輯（設計見
+[`brainstorms/2026-09-23-worker-agent-notebook-write.md`](brainstorms/2026-09-23-worker-agent-notebook-write.md)）。
+這次也順便修正了工作型代理產出檔案一直沒辦法出現在「檔案夾」的既有 bug（登記檔案時漏帶
+必填的 `owner_id`，見同一份設計紀錄）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0018_worker_task_notebook_tool.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 

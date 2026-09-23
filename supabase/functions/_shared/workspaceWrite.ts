@@ -37,7 +37,7 @@ export type WorkspaceWriteAction =
   | { action: "clarify"; question: string };
 
 export type ClassifyResult =
-  | { kind: "task"; summary: string; usage: Usage }
+  | { kind: "task"; summary: string; needsNotebookTool: boolean; usage: Usage }
   | { kind: "question"; usage: Usage }
   | { kind: "workspace_write"; write: WorkspaceWriteAction; usage: Usage };
 
@@ -110,7 +110,10 @@ function buildClassifySystemPrompt(allowTask: boolean, matchItemsText: string): 
     return `你負責判斷使用者最新這則訊息的意圖，只能回傳一行 JSON，不要有任何其他文字。可能的意圖有三種：
 
 1.「task」：需要實際動手做事才能完成的一般性任務——寫程式、修 bug、跑測試、產生檔案、部署、大規模搜尋整理資料等，做完會有具體產出或變更。
-   格式：{"type":"task","summary":"一句話描述這個任務要做什麼"}
+   格式：{"type":"task","summary":"一句話描述這個任務要做什麼","needsNotebookTool":true 或 false}
+   needsNotebookTool：只有使用者這則訊息本身明確要求把這個任務的結果或過程「記進記事本」
+   「加進待辦事項」「記錄下來」之類（不只是做完任務本身，還額外要求記錄）才設為 true；
+   單純交辦任務、沒有額外要求記錄的話，一律設為 false。
 ${WORKSPACE_WRITE_SPEC.replace("{existingItems}", matchItemsText)}
 3.「question」：以上兩種都不是的所有情況（單純問答、討論、閒聊、請教意見）。
    格式：{"type":"question"}`;
@@ -183,7 +186,12 @@ export async function classifyMessage(
     const parsed = JSON.parse(match[0]) as Record<string, unknown>;
 
     if (allowTask && parsed.type === "task" && typeof parsed.summary === "string" && parsed.summary.trim()) {
-      return { kind: "task", summary: parsed.summary.trim(), usage: result.usage };
+      return {
+        kind: "task",
+        summary: parsed.summary.trim(),
+        needsNotebookTool: parsed.needsNotebookTool === true,
+        usage: result.usage,
+      };
     }
     if (parsed.type === "workspace_write") {
       const write = parseWorkspaceWrite(parsed, matchItems);
