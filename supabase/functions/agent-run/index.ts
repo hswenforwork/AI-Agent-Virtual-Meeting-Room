@@ -49,12 +49,22 @@ Deno.serve(async (req) => {
 
     const { data: run, error: runErr } = await admin
       .from("agent_runs")
-      .select("id, room_id, agent_id, trigger_message_id, status, is_loop_in, loop_in_reason")
+      .select("id, room_id, agent_id, trigger_message_id, status, is_loop_in, loop_in_reason, cancel_requested")
       .eq("id", runId)
       .single();
     if (runErr || !run) return jsonError("找不到這個 run", 404, "not_found", headers);
     if (run.status !== "queued") {
       return new Response(JSON.stringify({ skipped: true }), { headers });
+    }
+
+    // 使用者在代理還沒真正開始跑（甚至 agent-run 都還沒被觸發）之前就按了停止
+    // （brainstorms/2026-09-23-stop-generation.md）：直接標成 cancelled，不用呼叫任何供應商。
+    if (run.cancel_requested) {
+      await admin
+        .from("agent_runs")
+        .update({ status: "cancelled", error_code: "cancelled_by_user", updated_at: new Date().toISOString() })
+        .eq("id", runId);
+      return new Response(JSON.stringify({ ok: false, cancelled: true }), { headers });
     }
 
     await admin.from("agent_runs").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", runId);
@@ -258,6 +268,18 @@ Deno.serve(async (req) => {
     const loopInTool = run.is_loop_in ? null : await buildLoopInTool(admin, triggeringUserId!, providerSlug);
     const pdfDocuments = ownerId ? await buildPdfDocuments(admin, ownerId) : [];
 
+    // 分類呼叫（classifyMessage）可能花了一段時間，這段期間使用者也可能已經按了停止，
+    // 重新查一次最新的 cancel_requested，避免明明使用者已經取消、卻還是生出一則新的
+    // 串流訊息卡片。
+    const { data: cancelCheck } = await admin.from("agent_runs").select("cancel_requested").eq("id", runId).maybeSingle();
+    if (cancelCheck?.cancel_requested) {
+      await admin
+        .from("agent_runs")
+        .update({ status: "cancelled", error_code: "cancelled_by_user", updated_at: new Date().toISOString() })
+        .eq("id", runId);
+      return new Response(JSON.stringify({ ok: false, cancelled: true }), { headers });
+    }
+
     // 串流輸出（brainstorms/2026-09-22-streaming-replies.md）：先插入一則空白的
     // status="streaming" 訊息，前端 Realtime 訂閱（已同時聽 INSERT/UPDATE）會先看到這則
     // 訊息卡片出現，再隨著下面的節流 UPDATE 逐段看到內容補上。
@@ -300,6 +322,16 @@ Deno.serve(async (req) => {
       }
     };
 
+    // 停止功能：AbortController 中止呼叫中的供應商 fetch，但這個 Edge Function 的執行環境
+    // 收不到前端事件，只能自己定期輪詢 cancel_requested（brainstorms/2026-09-23-stop-generation.md）。
+    // 用 setInterval 而不是只在 onDelta 裡檢查，是因為供應商在吐出第一個字前可能安靜好一陣子
+    // （模型思考中），那段期間 onDelta 完全不會被呼叫，輪詢才能保證使用者按下停止後很快生效。
+    const abortController = new AbortController();
+    const cancelPollId = setInterval(async () => {
+      const { data } = await admin.from("agent_runs").select("cancel_requested").eq("id", runId).maybeSingle();
+      if (data?.cancel_requested) abortController.abort();
+    }, 700);
+
     let streamUsage: Awaited<ReturnType<typeof provider.generateStream>>;
     try {
       streamUsage = await provider.generateStream(
@@ -312,9 +344,24 @@ Deno.serve(async (req) => {
           documents: pdfDocuments.length > 0 ? pdfDocuments : undefined,
         },
         onDelta,
+        abortController.signal,
       );
+      clearInterval(cancelPollId);
     } catch (streamErr) {
+      clearInterval(cancelPollId);
       if (updateInFlight) await updateInFlight.catch(() => {});
+
+      const wasCancelled = abortController.signal.aborted || (streamErr instanceof DOMException && streamErr.name === "AbortError");
+      if (wasCancelled) {
+        const interruptedText = accumulatedText ? `${accumulatedText}\n\n（已停止回覆）` : "（已停止回覆）";
+        await admin.from("messages").update({ content: interruptedText, status: "failed" }).eq("id", streamingMessage.id);
+        await admin
+          .from("agent_runs")
+          .update({ status: "cancelled", error_code: "cancelled_by_user", updated_at: new Date().toISOString() })
+          .eq("id", runId);
+        return new Response(JSON.stringify({ ok: false, cancelled: true }), { headers, status: 200 });
+      }
+
       const interruptedText = accumulatedText
         ? `${accumulatedText}\n\n（回覆中斷，請稍後重試或重新發問）`
         : "（回覆中斷，請稍後重試或重新發問）";
@@ -379,15 +426,17 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true }), { headers });
   } catch (err) {
     console.error("agent-run 未預期錯誤", err);
-    if (err instanceof ProviderHttpError) {
-      const friendly = friendlyProviderError(err.status);
-      if (runId) {
-        const status = err.status === 429 ? "rate_limited" : "failed";
-        await failRun(admin, runId, friendly.code, friendly.message, status);
-      }
-      return new Response(JSON.stringify({ ok: false, error: friendly }), { headers, status: 200 });
+    // 修正：這裡原本只有 ProviderHttpError 才會呼叫 failRun() 把 run 標成 failed——
+    // 任何其他類型的例外（DB 寫入失敗、解析錯誤等）會被 log 下來但完全不更新
+    // agent_runs.status，run 就永遠卡在 queued/running，畫面上的「OOO 回覆中…」
+    // 也就永遠不會消失。不管例外是什麼類型，只要拿得到 runId 就一定要收尾。
+    const friendly =
+      err instanceof ProviderHttpError ? friendlyProviderError(err.status) : { code: "internal_error", message: "系統暫時發生錯誤，請稍後重試" };
+    if (runId) {
+      const status = err instanceof ProviderHttpError && err.status === 429 ? "rate_limited" : "failed";
+      await failRun(admin, runId, friendly.code, friendly.message, status);
     }
-    return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
+    return new Response(JSON.stringify({ ok: false, error: friendly }), { headers, status: 200 });
   }
 });
 

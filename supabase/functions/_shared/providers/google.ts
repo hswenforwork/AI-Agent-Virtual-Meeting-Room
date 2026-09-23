@@ -139,7 +139,11 @@ export function createGoogleProvider(apiKey: string): AIProvider {
         toolCall: extractGeminiToolCall(parts),
       };
     },
-    async generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage> {
+    async generateStream(
+      request: GenerateRequest,
+      onDelta: (textDelta: string) => void,
+      signal?: AbortSignal,
+    ): Promise<StreamUsage> {
       const res = await fetch(
         `${GEMINI_API_BASE}/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
         {
@@ -151,6 +155,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
             tools: buildGeminiTools(request.tools),
             generationConfig: { maxOutputTokens: request.maxOutputTokens },
           }),
+          signal,
         },
       );
 

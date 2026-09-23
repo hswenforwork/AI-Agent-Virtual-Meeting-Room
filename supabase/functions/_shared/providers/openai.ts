@@ -123,7 +123,11 @@ export function createOpenAIProvider(apiKey: string): AIProvider {
         toolCall: parseOpenAIToolCall(message?.tool_calls),
       };
     },
-    async generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage> {
+    async generateStream(
+      request: GenerateRequest,
+      onDelta: (textDelta: string) => void,
+      signal?: AbortSignal,
+    ): Promise<StreamUsage> {
       const res = await fetch(OPENAI_API_URL, {
         method: "POST",
         headers: {
@@ -139,6 +143,7 @@ export function createOpenAIProvider(apiKey: string): AIProvider {
           messages: buildOpenAIMessages(request),
           tools: buildOpenAITools(request.tools),
         }),
+        signal,
       });
 
       if (!res.ok || !res.body) {

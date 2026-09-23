@@ -82,5 +82,11 @@ export interface AIProvider {
   // 對應 brainstorms/2026-09-22-streaming-replies.md：串流版本的 generate()，每收到一段
   // 文字就呼叫 onDelta，全部結束後 resolve 最終用量（三家供應商的用量資訊都只在串流的
   // 最後才會拿到完整數字，過程中不用逐段累計）。
-  generateStream(request: GenerateRequest, onDelta: (textDelta: string) => void): Promise<StreamUsage>;
+  // signal：停止回覆功能用（brainstorms/2026-09-23-stop-generation.md），呼叫端偵測到使用者
+  // 按下停止時 abort() 這個 signal，fetch 會直接中止連線，不用等供應商自然把這輪串流送完。
+  generateStream(
+    request: GenerateRequest,
+    onDelta: (textDelta: string) => void,
+    signal?: AbortSignal,
+  ): Promise<StreamUsage>;
 }
