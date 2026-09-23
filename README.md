@@ -45,6 +45,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0012_workspace_owner_id.sql`（記事本／待辦事項／檔案夾徹底跟房間解耦，見下方「附加設定」）
    - `supabase/migrations/0013_agent_collaboration.sql`（代理互相協作，見下方「附加設定」）
    - `supabase/migrations/0014_conversation_summary.sql`（對話自動摘要，見下方「附加設定」）
+   - `supabase/migrations/0015_agent_run_cancel.sql`（停止 AI 回覆，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -178,6 +179,16 @@ AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類�
 
 > 這三個附加設定牽涉到的 PDF 原生文件輸入（Anthropic／OpenAI／Google 各自的文件輸入格式）跟
 > DOCX/XLSX 文字擷取不需要額外的資料庫設定，Edge Functions 部署完就會生效。
+
+### 附加設定：停止 AI 回覆（建議，同時修正卡在「回覆中…」不會消失的問題）
+
+每個「OOO 回覆中…」旁邊會出現一顆「停止」按鈕，點擊後會中止正在生成中的那則回覆；同時修正了一個
+既有的 bug——代理執行過程中如果發生非供應商 API 本身的錯誤（例如資料庫寫入失敗），原本完全不會
+更新執行狀態，導致「回覆中…」永遠不會消失（設計見
+[`brainstorms/2026-09-23-stop-generation.md`](brainstorms/2026-09-23-stop-generation.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0015_agent_run_cancel.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 

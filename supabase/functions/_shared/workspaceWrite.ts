@@ -16,11 +16,17 @@ const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 const CLASSIFY_MAX_OUTPUT_TOKENS = 600;
 const MATCH_ITEMS_MAX_NOTES = 40;
 const MATCH_ITEMS_MAX_TASKS = 60;
+const MATCH_ITEM_PREVIEW_CHARS = 40;
 
 export interface WorkspaceMatchItem {
   id: string;
   type: "note" | "task";
   title: string;
+  // 記事本內容預覽（brainstorms/2026-09-23-workspace-write-cross-room-overwrite.md）：
+  // 很多記事沒有標題（顯示成「未命名記事」），光看標題完全分不出彼此，分類模型很容易
+  // 誤判成同一筆而錯配到 update_note，把跨聊天室、內容完全不相關的既有記事覆蓋掉。
+  // 補上內容預覽讓模型有更多依據判斷「這真的是同一筆嗎」。
+  preview?: string;
 }
 
 export type WorkspaceWriteAction =
@@ -40,7 +46,7 @@ export async function fetchWorkspaceMatchItems(admin: AdminClient, ownerId: stri
   const [{ data: notes }, { data: tasks }] = await Promise.all([
     admin
       .from("notes")
-      .select("id, title")
+      .select("id, title, content")
       .eq("owner_id", ownerId)
       .order("updated_at", { ascending: false })
       .limit(MATCH_ITEMS_MAX_NOTES),
@@ -53,7 +59,10 @@ export async function fetchWorkspaceMatchItems(admin: AdminClient, ownerId: stri
   ]);
 
   const items: WorkspaceMatchItem[] = [];
-  for (const n of notes ?? []) items.push({ id: n.id, type: "note", title: n.title || "未命名記事" });
+  for (const n of notes ?? []) {
+    const preview = (n.content ?? "").trim().slice(0, MATCH_ITEM_PREVIEW_CHARS);
+    items.push({ id: n.id, type: "note", title: n.title || "未命名記事", preview: preview || undefined });
+  }
   for (const t of tasks ?? []) {
     const statusLabel = t.status === "done" ? "（已完成）" : t.status === "in_progress" ? "（進行中）" : "";
     items.push({ id: t.id, type: "task", title: `${t.title}${statusLabel}` });
@@ -63,7 +72,9 @@ export async function fetchWorkspaceMatchItems(admin: AdminClient, ownerId: stri
 
 function buildMatchItemsText(items: WorkspaceMatchItem[]): string {
   if (items.length === 0) return "（目前沒有任何記事或待辦）";
-  return items.map((i) => `- [${i.type}] id=${i.id} 標題：${i.title}`).join("\n");
+  return items
+    .map((i) => `- [${i.type}] id=${i.id} 標題：${i.title}${i.preview ? `（內容開頭：${i.preview}…）` : ""}`)
+    .join("\n");
 }
 
 const WORKSPACE_WRITE_SPEC = `
@@ -77,7 +88,20 @@ const WORKSPACE_WRITE_SPEC = `
    - 使用者要修改/完成某一筆，但你在下面清單裡找不到明確對應的項目，或有多筆標題相似、不確定是哪一筆：
      {"type":"workspace_write","action":"clarify","question":"用一句話請使用者說清楚是哪一筆"}
 
-目前既有的記事本／待辦事項清單（只用來比對 update_note/update_task 要改哪一筆，跟這次意圖無關就不用管它）：
+   update_note/update_task 會直接覆蓋掉既有內容，選錯會讓使用者的舊資料憑空消失，
+   一定要非常保守：
+   - 只有使用者這則訊息本身明確在講「修改／更新／補充／完成／刪掉某部分」一筆**既有**的
+     記事或待辦時，才能用 update_note/update_task；使用者是在講一件新的事、新的內容，
+     即使清單裡剛好有標題或內容相似（尤其是標題是「未命名記事」這種預設值，或內容開頭
+     剛好雷同）的項目，也一律當成新的一筆，用 create_note/create_task，絕對不能因為
+     「看起來像」就配對過去覆蓋掉。
+   - 只有在使用者的話明確指出是哪一筆（提到標題關鍵字、內容關鍵字、或明確說「剛剛那則」
+     這類上下文），且下面清單裡有清楚對應的單一項目時，才用 update_note/update_task；
+     只要有任何不確定，一律用 clarify 反問，不要用猜的、也不要因為「這是唯一一筆」就
+     直接選它。
+
+目前既有的記事本／待辦事項清單（只用來比對 update_note/update_task 要改哪一筆，跟這次意圖無關就不用管它；
+這份清單可能包含其他聊天室、跟這次對話主題完全無關的項目）：
 {existingItems}
 `;
 
