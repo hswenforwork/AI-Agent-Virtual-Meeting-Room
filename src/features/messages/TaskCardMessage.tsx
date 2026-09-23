@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { format } from "date-fns";
 import { supabase } from "../../lib/supabase";
 import type { AgentRow, MessageRow } from "../../types/database";
+import { formatTokenUsage } from "./tokenUsage";
 
 const STATUS_LABEL: Record<string, string> = {
   pending_confirmation: "等待確認",
@@ -30,6 +31,7 @@ export function TaskCardMessage({ message, agentsById }: { message: MessageRow; 
   const agent = message.sender_agent_id ? agentsById.get(message.sender_agent_id) : undefined;
   const metadata = message.metadata ?? {};
   const status = metadata.status ?? "pending_confirmation";
+  const tokenUsage = formatTokenUsage(message.input_tokens, message.output_tokens);
 
   const handleStart = async () => {
     if (!metadata.workerTaskId) return;
@@ -83,7 +85,10 @@ export function TaskCardMessage({ message, agentsById }: { message: MessageRow; 
           </div>
         )}
 
-        <div className="mt-1 text-[10px] text-slate-400">{format(new Date(message.created_at), "HH:mm")}</div>
+        <div className="mt-1 text-[10px] text-slate-400">
+          {format(new Date(message.created_at), "HH:mm")}
+          {tokenUsage && <> · {tokenUsage}</>}
+        </div>
       </div>
     </div>
   );

@@ -73,6 +73,11 @@ export interface MessageRow {
   client_id: string | null;
   kind: MessageKind;
   metadata: TaskCardMetadata;
+  // 訊息泡泡顯示 token 用量（brainstorms/2026-09-23-message-token-usage-display.md）：
+  // 只有一般聊天回覆跟 task_card 才會有值；上線前的舊訊息跟 workspace_write 短確認
+  // 一律是 null，前端不顯示任何提示。
+  input_tokens: number | null;
+  output_tokens: number | null;
   created_at: string;
 }
 

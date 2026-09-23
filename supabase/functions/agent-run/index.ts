@@ -404,7 +404,18 @@ Deno.serve(async (req) => {
     // 保證最後一段內容一定會寫進去，不管節流有沒有卡到最後一段
     if (updateInFlight) await updateInFlight.catch(() => {});
     const finalText = accumulatedText || (loopedInLabel ? `已請 ${loopedInLabel} 協助這個問題。` : "（沒有回應內容）");
-    await admin.from("messages").update({ content: finalText, status: "completed" }).eq("id", streamingMessage.id);
+    // 訊息泡泡顯示 token 用量（brainstorms/2026-09-23-message-token-usage-display.md
+    // 訪談 Q1）：只算真正生成這則回覆內容的那次呼叫（streamUsage），不含前面意圖分類
+    // 呼叫（classification.usage）的用量——分類呼叫產生的不是這則訊息的內容。
+    await admin
+      .from("messages")
+      .update({
+        content: finalText,
+        status: "completed",
+        input_tokens: streamUsage.usage.inputTokens,
+        output_tokens: streamUsage.usage.outputTokens,
+      })
+      .eq("id", streamingMessage.id);
 
     const combinedUsage = {
       inputTokens: classification.usage.inputTokens + streamUsage.usage.inputTokens,

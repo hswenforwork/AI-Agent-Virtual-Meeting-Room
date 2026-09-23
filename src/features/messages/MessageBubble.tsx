@@ -3,6 +3,7 @@ import remarkGfm from "remark-gfm";
 import { format } from "date-fns";
 import type { AgentRow, MessageRow } from "../../types/database";
 import { TaskCardMessage } from "./TaskCardMessage";
+import { formatTokenUsage } from "./tokenUsage";
 
 export function MessageBubble({
   message,
@@ -26,6 +27,7 @@ export function MessageBubble({
   const isUser = message.sender_type === "user";
   const agent = message.sender_agent_id ? agentsById.get(message.sender_agent_id) : undefined;
   const label = isUser ? "我" : agent?.name ?? "代理";
+  const tokenUsage = !isUser ? formatTokenUsage(message.input_tokens, message.output_tokens) : null;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -43,6 +45,7 @@ export function MessageBubble({
         </div>
         <div className={`mt-1 text-[10px] ${isUser ? "text-slate-300" : "text-slate-400"}`}>
           {format(new Date(message.created_at), "HH:mm")}
+          {tokenUsage && <> · {tokenUsage}</>}
         </div>
       </div>
     </div>
