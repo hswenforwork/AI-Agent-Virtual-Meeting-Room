@@ -13,6 +13,50 @@ import { readSseStream } from "../sse.ts";
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
+// 對應 brainstorms/2026-09-23-gemini-503-retry.md：Gemini API 常見的「high demand，
+// 暫時無法使用」是官方自己回報的 503 UNAVAILABLE（訊息明講「Spikes in demand are
+// usually temporary. Please try again later.」），跟金鑰、額度、程式邏輯都無關，重試
+// 一兩次通常就會過。429（RESOURCE_EXHAUSTED，短暫的速率限制）也是同一種可重試的錯誤。
+const RETRYABLE_STATUSES = new Set([429, 503]);
+const MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 700;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
+// generate()／generateStream() 共用：遇到 429/503 這種暫時性錯誤時，消耗掉這次回應的
+// body（避免連線資源沒釋放）、等一段時間（指數退避）再重試，最多重試 MAX_RETRIES 次；
+// 其他狀態碼（包含金鑰無效、額度用完等不會自己好的錯誤）或已經用完重試次數，直接把
+// 這次的 Response 原封不動回傳給呼叫端，讓既有的 !res.ok 判斷跟 ProviderHttpError
+// 邏輯照舊處理，不用另外重寫一份錯誤處理。
+async function fetchWithGeminiRetry(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, init);
+    if (res.ok || !RETRYABLE_STATUSES.has(res.status) || attempt >= MAX_RETRIES) {
+      return res;
+    }
+    await res.text().catch(() => {});
+    const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+    console.error(`Gemini API 暫時無法使用（${res.status}），${delay}ms 後重試（第 ${attempt + 1} 次）`);
+    await sleep(delay, (init.signal as AbortSignal | null) ?? undefined);
+  }
+}
+
 // GET /v1beta/models 回傳的模型（包含 embedding 專用模型）都有 supportedGenerationMethods
 // 這個欄位，只留下真正支援 generateContent（聊天）的那些；name 是 "models/xxx" 格式，
 // 呼叫 generateContent 時要用不帶 "models/" 前綴的那段（跟 generate() 裡的 request.model 一致）。
@@ -132,7 +176,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
   return {
     listModels: () => listGoogleModels(apiKey),
     async generate(request: GenerateRequest): Promise<GenerateResult> {
-      const res = await fetch(
+      const res = await fetchWithGeminiRetry(
         `${GEMINI_API_BASE}/${encodeURIComponent(request.model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
         {
           method: "POST",
@@ -174,7 +218,7 @@ export function createGoogleProvider(apiKey: string): AIProvider {
       onDelta: (textDelta: string) => void,
       signal?: AbortSignal,
     ): Promise<StreamUsage> {
-      const res = await fetch(
+      const res = await fetchWithGeminiRetry(
         `${GEMINI_API_BASE}/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
         {
           method: "POST",
