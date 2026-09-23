@@ -29,17 +29,19 @@
   （Managed Agents 沙盒）執行的情況，執行過程中花的 token 也要算進這則訊息的用量，
   不是只看分類呼叫本身那一小段。
 
-### 發現：工作型代理（Managed Agents）目前完全沒有 token 用量追蹤
+### 發現：工作型代理（Managed Agents）目前完全沒有 token 用量追蹤，但 API 有提供，可以補
 - 已記錄（技術事實，非使用者回答）：查過 `supabase/functions/worker-task-start/index.ts`
   跟 `supabase/functions/_shared/managedAgents.ts`，兩個檔案裡都沒有任何 usage/token
-  相關的程式碼——Managed Agents 的執行是透過 SSE 事件串流回報進度，但目前完全沒有解析
-  或儲存任何 usage 數字。這跟一般聊天／classifyMessage 那種直接呼叫 Messages API、
-  回應裡就帶 usage 欄位的情況不一樣：Managed Agents 的用量需要另外從它的 session
-  事件裡擷取（如果有提供的話），這部分目前是全新的功能，不是「補顯示既有數字」
-  這麼單純。
-- 待釐清：Managed Agents API 的 SSE 事件裡到底有沒有帶 usage/token 資訊、格式是什麼
-  → 需要另外查證 Managed Agents API 文件才能回答，會影響任務卡片能不能顯示 token（或
-  能顯示到多精確）。
+  相關的程式碼——`worker-task-start` 的事件迴圈（第 223-251 行附近）目前只處理
+  `agent.message`／`agent.custom_tool_use`／`session.error`／`session.status_idle`／
+  `session.status_terminated` 這五種事件類型，其他類型一律被無聲丟棄。
+- 已記錄（查證 Managed Agents API 官方文件得到的答案，解決上面的待釐清）：**SSE 事件裡
+  確實有 usage 資訊**——`session.usage` 事件會在 session 結束前帶一次「累計」的 token
+  總量快照（`input_tokens`/`output_tokens`，還有 `list_cost` 等），另外每次模型請求結束
+  也會有 `span.model_request_end` 事件帶當次的 `model_usage`（`input_tokens`/
+  `output_tokens`/快取 token）。也就是說只要在既有的事件迴圈裡多加一個
+  `case "session.usage"`，把這次快照存下來，就能取得整個任務執行過程總共花了多少
+  token，不需要額外呼叫或猜測——是可以做的，只是目前完全沒接。
 
 ## 待釐清事項
-- Managed Agents API 的 session 事件是否回報 token 用量、格式為何 → 需要查證 API 文件
+（已解決：Managed Agents 用量可行性，見上）
