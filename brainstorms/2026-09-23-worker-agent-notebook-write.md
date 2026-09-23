@@ -1,6 +1,6 @@
 # 工作型代理真正寫進記事本/待辦事項：腦力激盪／探索紀錄
 日期：2026-09-23 · 目標：讓工作型代理（Managed Agents 沙盒）能真正寫進聊天室的 notes/tasks 資料表，不再只能輸出成沙盒裡的檔案
-狀態：進行中
+狀態：訪談完成，待確認是否還有補充後開始實作
 背景來源：`brainstorms/2026-09-23-worker-agent-delegation-fixes.md`（問題 3：架構缺口說明）、
 `supabase/functions/_shared/workspaceWrite.ts`、`supabase/functions/_shared/managedAgents.ts`、
 `supabase/functions/worker-task-start/index.ts`、`brainstorms/2026-09-23-workspace-write-cross-room-overwrite.md`
@@ -57,5 +57,21 @@
   過程中陸續記錄好幾則）？
 - 已記錄：允許多次呼叫，跟 `consult_other_ai` 的行為一致（也沒有限制次數）。
 
+### Q6：寫入失敗時的處理
+- 問題：寫進記事本/待辦失敗時（例如網路問題），要讓整個任務算失敗，還是繼續完成任務、
+  只在摘要裡註明這筆沒寫成功？
+- 已記錄：繼續完成任務，把失敗結果回傳給模型（透過 `sendCustomToolResult()`），讓它
+  自己在最後的 SUMMARY 裡誠實說明這筆沒寫成功，不要讓整個任務因此算失敗。
+
+## 摘要／重要決策
+1. **觸發方式**：只有使用者在原始訊息裡明確要求（例如提到「記進記事本」）時，才附帶
+   這個新工具給工作型代理；其他任務完全不給這個能力。判斷方式讓 `classifyMessage()`
+   在分類出 `kind: "task"` 時順便多回傳一個欄位（不用額外一次 API 呼叫）。
+2. **範圍**：記事本與待辦事項都支援。
+3. **新增 vs 修改**：先只支援新增（`create_note`/`create_task`），不支援修改既有項目。
+4. **確認機制**：不需要，直接寫入（跟一般聊天的既有原則一致）。
+5. **呼叫次數**：不限制，允許一次任務裡多次呼叫。
+6. **失敗處理**：繼續完成任務，把失敗結果回傳給模型，由它自己在 SUMMARY 裡誠實說明。
+
 ## 待釐清事項
-（隨訪談持續更新）
+（都已解決，見上）
