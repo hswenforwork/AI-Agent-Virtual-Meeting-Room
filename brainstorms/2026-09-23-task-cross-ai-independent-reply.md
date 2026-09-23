@@ -1,6 +1,6 @@
 # 任務裡被諮詢的 AI 也要自己發獨立訊息：腦力激盪／探索紀錄
 日期：2026-09-23 · 目標：統一各 AI 自己回復（不管一般聊天還是任務），讓使用者能確認 AI 之間溝通是否順暢
-狀態：訪談完成，待確認是否還有補充後開始實作
+狀態：完成（已實作）
 背景來源：`supabase/functions/worker-task-start/index.ts`（`handleConsultOtherAi()`）、
 `supabase/functions/_shared/providers/gemini.ts`（`consultGemini()`）、
 `supabase/functions/_shared/agentCollaboration.ts`（`spawnLoopInRun()`，一般聊天已有的對照組）、

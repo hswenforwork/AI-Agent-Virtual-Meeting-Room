@@ -84,7 +84,7 @@ function buildBaseTools() {
       type: "custom",
       name: CONSULT_TOOL_NAME,
       description:
-        "當你卡住、同一個問題已經嘗試修正 3 次以上仍無法解決時，呼叫這個工具，提供完整的問題描述、已嘗試過的方法、錯誤訊息，向另一位 AI（Gemini）求助分析與建議。",
+        "當你卡住、同一個問題已經嘗試修正 3 次以上仍無法解決時，呼叫這個工具，提供完整的問題描述、已嘗試過的方法、錯誤訊息，向另一位 AI（Gemini）求助分析與建議。回傳給你的文字只是給你自己參考、判斷怎麼繼續任務用——Gemini 的完整回答會另外顯示成聊天室裡它自己的一則訊息給使用者看，你最後的 SUMMARY 不要重複貼出 Gemini 的完整答案，只要提一句「已請教 Gemini，詳見上方 Gemini 的回覆」這樣的指引即可，避免讓使用者誤以為是你自己想出來的答案。",
       input_schema: {
         type: "object",
         properties: {

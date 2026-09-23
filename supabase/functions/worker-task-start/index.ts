@@ -163,6 +163,16 @@ Deno.serve(async (req) => {
     // worker-agent-notebook-write.md）。沒有附帶這個工具的任務也順便查一次，反正很便宜，
     // 不用另外判斷 needs_notebook_tool 才查。
     const ownerId = await resolveWorkspaceOwnerId(admin, workerTask.room_id);
+    // consult_other_ai 求助 Gemini 時，答案要另外發成 Gemini 自己的一則獨立訊息
+    // （brainstorms/2026-09-23-task-cross-ai-independent-reply.md），需要知道這個房間
+    // Gemini 那個 agent 列的 id 才能設 sender_agent_id；先查一次存起來，同一個任務裡
+    // 呼叫多次 consult_other_ai 也不用重查。
+    const { data: geminiAgent } = await admin
+      .from("agents")
+      .select("id")
+      .eq("room_id", workerTask.room_id)
+      .eq("provider", "google")
+      .maybeSingle();
     const consumeSession = () =>
       runSessionToCompletion(admin, apiKey, geminiApiKey, {
         sessionId: session.id,
@@ -172,6 +182,7 @@ Deno.serve(async (req) => {
         taskSummary: workerTask.task_summary,
         ownerId,
         userId: user.id,
+        geminiAgentId: geminiAgent?.id ?? null,
       });
 
     // deno-lint-ignore no-undef
@@ -217,6 +228,11 @@ interface SessionContext {
   // 一定有 owner_id），保留 null 只是防禦性處理，真的遇到就讓工具呼叫失敗並回報。
   ownerId: string | null;
   userId: string;
+  // consult_other_ai 求助 Gemini 時，答案要發成 Gemini 自己的獨立訊息
+  // （brainstorms/2026-09-23-task-cross-ai-independent-reply.md），需要這個房間 Gemini
+  // 的 agent id 當 sender_agent_id；理論上每個房間都會有這三個固定代理，null 只是防禦性
+  // 處理（真的遇到就不發這則訊息，不影響任務本身）。
+  geminiAgentId: string | null;
 }
 
 async function runSessionToCompletion(
@@ -335,7 +351,29 @@ async function handleConsultOtherAi(
       `已嘗試過的方法：${input.attempted_solutions ?? "（未提供）"}`,
       `錯誤訊息：${input.error_details ?? "（未提供）"}`,
     ].join("\n");
-    resultText = await consultGemini(geminiApiKey, prompt);
+    const consulted = await consultGemini(geminiApiKey, prompt);
+    resultText = consulted.text;
+
+    // 統一改成各 AI 自己回覆（brainstorms/2026-09-23-task-cross-ai-independent-reply.md）：
+    // 真的有呼叫到 Gemini（不是上面「沒設定 key」那個兜底分支）時，額外發一則 Gemini
+    // 自己的獨立訊息，回覆到任務卡片本身，讓使用者能直接看到 Gemini 的完整回答、驗證
+    // 這次協作是否順暢——不是只看 Claude 事後在 SUMMARY 裡的轉述。sendCustomToolResult()
+    // 那段文字仍然照舊回給沙盒裡的 Claude 繼續用，兩邊不互相取代（訪談 Q1）。
+    if (ctx.geminiAgentId) {
+      const { error: geminiMsgErr } = await admin.from("messages").insert({
+        room_id: ctx.roomId,
+        sender_type: "agent",
+        sender_agent_id: ctx.geminiAgentId,
+        content: resultText,
+        status: "completed",
+        reply_to_id: ctx.taskCardMessageId,
+        input_tokens: consulted.usage.inputTokens,
+        output_tokens: consulted.usage.outputTokens,
+      });
+      if (geminiMsgErr) console.error("寫入 Gemini 獨立訊息失敗", ctx.sessionId, geminiMsgErr);
+    } else {
+      console.error("找不到這個房間 Gemini 的 agent id，無法發獨立訊息", ctx.sessionId);
+    }
   }
 
   try {

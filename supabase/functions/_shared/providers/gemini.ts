@@ -11,7 +11,17 @@ import { createGoogleProvider } from "./google.ts";
 const CONSULT_MODEL = Deno.env.get("DEFAULT_GEMINI_MODEL") ?? "gemini-3.8-flash";
 const CONSULT_MAX_OUTPUT_TOKENS = 2048;
 
-export async function consultGemini(apiKey: string, prompt: string): Promise<string> {
+export interface ConsultGeminiResult {
+  text: string;
+  // brainstorms/2026-09-23-task-cross-ai-independent-reply.md 訪談 Q5：Gemini 的回答會
+  // 額外變成聊天室裡它自己的一則獨立訊息，跟其他 AI 回覆一樣要顯示 token 用量，所以這裡
+  // 也要把用量帶出去（失敗或沒有內容時是零用量，呼叫端不會因此把訊息寫成一段假數字）。
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+const ZERO_USAGE = { inputTokens: 0, outputTokens: 0 };
+
+export async function consultGemini(apiKey: string, prompt: string): Promise<ConsultGeminiResult> {
   try {
     const result = await createGoogleProvider(apiKey).generate({
       systemPrompt: "",
@@ -19,9 +29,12 @@ export async function consultGemini(apiKey: string, prompt: string): Promise<str
       model: CONSULT_MODEL,
       maxOutputTokens: CONSULT_MAX_OUTPUT_TOKENS,
     });
-    return result.text || "（Gemini 沒有回傳內容，請依自己的判斷繼續嘗試。）";
+    return {
+      text: result.text || "（Gemini 沒有回傳內容，請依自己的判斷繼續嘗試。）",
+      usage: result.usage,
+    };
   } catch (err) {
     console.error("詢問 Gemini 失敗", err);
-    return "（詢問 Gemini 時發生錯誤，請依自己的判斷繼續嘗試。）";
+    return { text: "（詢問 Gemini 時發生錯誤，請依自己的判斷繼續嘗試。）", usage: ZERO_USAGE };
   }
 }
