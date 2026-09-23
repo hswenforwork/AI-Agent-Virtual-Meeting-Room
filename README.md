@@ -46,6 +46,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0013_agent_collaboration.sql`（代理互相協作，見下方「附加設定」）
    - `supabase/migrations/0014_conversation_summary.sql`（對話自動摘要，見下方「附加設定」）
    - `supabase/migrations/0015_agent_run_cancel.sql`（停止 AI 回覆，見下方「附加設定」）
+   - `supabase/migrations/0016_message_token_usage.sql`（訊息泡泡顯示 token 用量，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -189,6 +190,16 @@ AI 判斷「這句話是不是要記事/加待辦」是額外一次輕量分類�
 
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0015_agent_run_cancel.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+### 附加設定：訊息泡泡顯示 token 用量（選用但建議）
+
+一般聊天回覆、任務卡片（含工作型代理執行過程）的訊息泡泡時間戳旁邊會顯示這則訊息用了
+多少 token（例如「14:32 · 1,234 tokens」），只顯示合計數字，不含意圖分類呼叫本身的用量；
+記事本/待辦短確認訊息不顯示。上線前已存在的舊訊息沒有這筆資料，維持現狀不顯示任何提示
+（設計見 [`brainstorms/2026-09-23-message-token-usage-display.md`](brainstorms/2026-09-23-message-token-usage-display.md)）。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0016_message_token_usage.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 

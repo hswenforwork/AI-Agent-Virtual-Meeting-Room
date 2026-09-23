@@ -212,6 +212,12 @@ async function runSessionToCompletion(
   const progressLog: string[] = [];
   let finished = false;
   let sawError = false;
+  // 訊息泡泡顯示 token 用量（brainstorms/2026-09-23-message-token-usage-display.md
+  // 訪談 Q1）：task_card 要算進整個任務執行過程花的 token，Managed Agents 用
+  // session.usage 事件回報累計用量快照——目前這份文件沒有給出這個事件精確的欄位
+  // 形狀，保守起見同時嘗試「欄位直接在事件最上層」跟「包在 usage 底下」兩種可能。
+  let usageInputTokens: number | undefined;
+  let usageOutputTokens: number | undefined;
 
   const pushProgress = async (entry: string) => {
     progressLog.push(entry);
@@ -230,6 +236,14 @@ async function runSessionToCompletion(
         case "agent.custom_tool_use": {
           if (event.name === CONSULT_TOOL_NAME) {
             await handleConsultOtherAi(admin, apiKey, geminiApiKey, ctx, event, pushProgress);
+          }
+          break;
+        }
+        case "session.usage": {
+          const usage = extractSessionUsage(event);
+          if (usage) {
+            usageInputTokens = usage.inputTokens;
+            usageOutputTokens = usage.outputTokens;
           }
           break;
         }
@@ -263,7 +277,19 @@ async function runSessionToCompletion(
     sawError = true;
   }
 
-  await finalizeTask(admin, apiKey, ctx, progressLog, sawError);
+  await finalizeTask(admin, apiKey, ctx, progressLog, sawError, {
+    inputTokens: usageInputTokens,
+    outputTokens: usageOutputTokens,
+  });
+}
+
+function extractSessionUsage(event: CmaEvent): { inputTokens: number; outputTokens: number } | undefined {
+  const direct = event as { input_tokens?: number; output_tokens?: number };
+  const nested = event.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+  const inputTokens = direct.input_tokens ?? nested?.input_tokens;
+  const outputTokens = direct.output_tokens ?? nested?.output_tokens;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") return undefined;
+  return { inputTokens, outputTokens };
 }
 
 async function handleConsultOtherAi(
@@ -312,7 +338,14 @@ function extractText(content: unknown): string {
 async function updateTaskCard(
   admin: AdminClient,
   ctx: SessionContext,
-  patch: { status: string; content?: string; outputs?: { name: string; fileId: string }[]; progressLog?: string[] },
+  patch: {
+    status: string;
+    content?: string;
+    outputs?: { name: string; fileId: string }[];
+    progressLog?: string[];
+    inputTokens?: number;
+    outputTokens?: number;
+  },
 ) {
   if (!ctx.taskCardMessageId) return;
   const update: Record<string, unknown> = {
@@ -326,6 +359,10 @@ async function updateTaskCard(
     },
   };
   if (patch.content) update.content = patch.content;
+  // 只有真的拿到 session.usage 快照才寫入，拿不到就維持 null（沒有 usage 資料）
+  // 而不是寫入 0——0 tokens 看起來像確實花了 0 個，容易誤導。
+  if (patch.inputTokens !== undefined) update.input_tokens = patch.inputTokens;
+  if (patch.outputTokens !== undefined) update.output_tokens = patch.outputTokens;
   await admin.from("messages").update(update).eq("id", ctx.taskCardMessageId);
 }
 
@@ -335,6 +372,7 @@ async function finalizeTask(
   ctx: SessionContext,
   progressLog: string[],
   sawError: boolean,
+  usage: { inputTokens?: number; outputTokens?: number },
 ) {
   const outputs = await filesToArtifacts(admin, apiKey, ctx);
 
@@ -350,7 +388,14 @@ async function finalizeTask(
     .update({ status, updated_at: new Date().toISOString() })
     .eq("id", ctx.workerTaskId);
 
-  await updateTaskCard(admin, ctx, { status, content: summary, outputs, progressLog });
+  await updateTaskCard(admin, ctx, {
+    status,
+    content: summary,
+    outputs,
+    progressLog,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+  });
 
   try {
     await archiveSession(apiKey, ctx.sessionId);
