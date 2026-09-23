@@ -455,8 +455,14 @@ async function finalizeTask(
   // 上傳進檔案夾——之前發生過摘要宣稱「已輸出至 /mnt/session/outputs/XXX」，但
   // filesToArtifacts() 實際上完全沒抓到任何輸出檔案（brainstorms/2026-09-23-
   // worker-agent-delegation-fixes.md）。與其讓使用者誤信一段沒有對照證據的宣稱，
-  // 偵測到「摘要提到輸出檔案」但 outputs 是空的時候，明確補一句提醒。
-  if (outputs.length === 0 && /\/mnt\/session\/outputs\/|輸出檔案|產出檔案/.test(summary)) {
+  // 偵測到「摘要提到具體檔名」但 outputs 是空的時候，明確補一句提醒。
+  // 一定要比對到具體檔名（副檔名，或路徑後面還接著檔名字元）才觸發，不能只看「輸出檔案」
+  // 這種泛用字眼本身——原本的寫法連「此任務無需輸出檔案」這種明確否定的句子都會誤觸發
+  // （brainstorms/2026-09-23-worker-agent-notebook-write.md 實作後的回報）。
+  const mentionsSpecificOutputFile =
+    /\/mnt\/session\/outputs\/[^\s，。、\n]+/.test(summary) ||
+    /[\w\-一-鿿]+\.(md|txt|csv|json|png|jpe?g|pdf|xlsx?|docx?|zip|py|js|ts|html)\b/i.test(summary);
+  if (outputs.length === 0 && mentionsSpecificOutputFile) {
     summary += "\n\n（提醒：上面提到的輸出檔案在檔案夾裡找不到，可能實際上沒有寫入或上傳成功，請自行確認內容是否正確。）";
   }
 
