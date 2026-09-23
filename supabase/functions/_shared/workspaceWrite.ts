@@ -36,18 +36,18 @@ export type ClassifyResult =
   | { kind: "workspace_write"; write: WorkspaceWriteAction; usage: Usage };
 
 // 給分類 prompt 看的既有記事／待辦清單（含 id，用來比對 update_note/update_task 要改哪一筆）。
-export async function fetchWorkspaceMatchItems(admin: AdminClient, roomIds: string[]): Promise<WorkspaceMatchItem[]> {
+export async function fetchWorkspaceMatchItems(admin: AdminClient, ownerId: string): Promise<WorkspaceMatchItem[]> {
   const [{ data: notes }, { data: tasks }] = await Promise.all([
     admin
       .from("notes")
       .select("id, title")
-      .in("room_id", roomIds)
+      .eq("owner_id", ownerId)
       .order("updated_at", { ascending: false })
       .limit(MATCH_ITEMS_MAX_NOTES),
     admin
       .from("tasks")
       .select("id, title, status")
-      .in("room_id", roomIds)
+      .eq("owner_id", ownerId)
       .order("created_at", { ascending: false })
       .limit(MATCH_ITEMS_MAX_TASKS),
   ]);
@@ -173,9 +173,12 @@ export async function classifyMessage(
 }
 
 // 執行實際的資料庫寫入，回傳要顯示給使用者的短確認文字（Q5：只回短確認，不額外生成聊天回覆）。
+// ownerId 是真正的歸屬（brainstorms/2026-09-23-gpt-audit-followups.md Q1），roomId 只在新增時
+// 當作這筆記事/待辦的「來源房間」參考欄位，不影響誰看得到它。
 export async function applyWorkspaceWrite(
   admin: AdminClient,
   roomId: string,
+  ownerId: string,
   userId: string | undefined,
   write: WorkspaceWriteAction,
 ): Promise<string> {
@@ -183,12 +186,12 @@ export async function applyWorkspaceWrite(
     case "create_note": {
       const { error } = await admin
         .from("notes")
-        .insert({ room_id: roomId, title: write.title, content: write.content, created_by: userId });
+        .insert({ room_id: roomId, owner_id: ownerId, title: write.title, content: write.content, created_by: userId });
       if (error) throw error;
       return `已幫你記到記事本：${write.title}`;
     }
     case "create_task": {
-      const { error } = await admin.from("tasks").insert({ room_id: roomId, title: write.title });
+      const { error } = await admin.from("tasks").insert({ room_id: roomId, owner_id: ownerId, title: write.title });
       if (error) throw error;
       return `已幫你加進待辦事項：${write.title}`;
     }

@@ -1,11 +1,12 @@
 // 把記事本／待辦事項／檔案夾整理成一段文字，讓 AI（一般聊天跟工作型代理都適用）
 // 當作上下文參考。對應 brainstorms/2026-09-22-sidebar-resize-ai-context.md Q4/Q5。
-// brainstorms/2026-09-23-notes-write-and-shared-workspace.md Q1：記事本/待辦/檔案夾已經
-// 改成跨聊天室共用（RLS 依 rooms.owner_id 判斷，見 migrations/0011_shared_workspace.sql），
-// 這裡用 service_role 直接查詢，所以要自己算出「跟這個房間同一個擁有者的所有房間 id」，
-// 不能只查單一 room_id。
+// brainstorms/2026-09-23-gpt-audit-followups.md Q1：notes/tasks/files 已經徹底跟房間
+// 解耦，真正歸屬是 owner_id（見 migrations/0012_workspace_owner_id.sql），這裡用
+// service_role 查詢時只需要先把 room_id 換算成 owner_id，再直接用 owner_id 篩選即可，
+// 不用再算「同一個擁有者名下所有房間 id」這種間接關聯。
 
 import type { supabaseAdmin } from "./supabaseAdmin.ts";
+import type { DocumentAttachment } from "./providers/types.ts";
 
 type AdminClient = ReturnType<typeof supabaseAdmin>;
 
@@ -15,27 +16,27 @@ const TASKS_MAX_COUNT = 20;
 const FILE_CONTEXT_MAX_FILES = 3;
 const FILE_CONTEXT_MAX_CHUNKS_PER_FILE = 2;
 const FILE_CONTEXT_MAX_CHARS = 6000;
+// PDF 走原生文件輸入（Q14/Q15），每頁都要算進供應商的 context window（Anthropic/Gemini
+// 官方文件都提到一頁至少兩三百 token 起跳），先保守只帶最近 2 份，避免單次請求就把
+// 上下文塞爆或超過供應商的請求大小上限。
+const PDF_CONTEXT_MAX_FILES = 2;
 
 const TASK_STATUS_LABEL: Record<string, string> = {
   todo: "待辦",
   in_progress: "進行中",
 };
 
-// 給定一個房間 id，回傳「同一個擁有者名下所有房間 id」的清單（至少包含這個房間自己）。
-export async function resolveWorkspaceRoomIds(admin: AdminClient, roomId: string): Promise<string[]> {
+// 給定一個房間 id，回傳這個房間擁有者的 user id（notes/tasks/files 真正的歸屬）。
+export async function resolveWorkspaceOwnerId(admin: AdminClient, roomId: string): Promise<string | null> {
   const { data: room } = await admin.from("rooms").select("owner_id").eq("id", roomId).maybeSingle();
-  if (!room) return [roomId];
-
-  const { data: rooms } = await admin.from("rooms").select("id").eq("owner_id", room.owner_id);
-  const ids = (rooms ?? []).map((r) => r.id);
-  return ids.length > 0 ? ids : [roomId];
+  return room?.owner_id ?? null;
 }
 
-async function buildNotesContext(admin: AdminClient, roomIds: string[]): Promise<string> {
+async function buildNotesContext(admin: AdminClient, ownerId: string): Promise<string> {
   const { data: notes } = await admin
     .from("notes")
     .select("title, content")
-    .in("room_id", roomIds)
+    .eq("owner_id", ownerId)
     .order("updated_at", { ascending: false })
     .limit(NOTES_MAX_COUNT);
 
@@ -48,11 +49,11 @@ async function buildNotesContext(admin: AdminClient, roomIds: string[]): Promise
 
 // 只給還沒完成的（todo／in_progress），已完成的不進 context，避免累積很多已完成
 // 事項時把 context 灌爆（brainstorms/2026-09-22-sidebar-resize-ai-context.md Q5）。
-async function buildTasksContext(admin: AdminClient, roomIds: string[]): Promise<string> {
+async function buildTasksContext(admin: AdminClient, ownerId: string): Promise<string> {
   const { data: tasks } = await admin
     .from("tasks")
     .select("title, description, status")
-    .in("room_id", roomIds)
+    .eq("owner_id", ownerId)
     .in("status", ["todo", "in_progress"])
     .order("created_at", { ascending: true })
     .limit(TASKS_MAX_COUNT);
@@ -67,11 +68,11 @@ async function buildTasksContext(admin: AdminClient, roomIds: string[]): Promise
     .join("\n");
 }
 
-async function buildFileContext(admin: AdminClient, roomIds: string[]): Promise<string> {
+async function buildFileContext(admin: AdminClient, ownerId: string): Promise<string> {
   const { data: files } = await admin
     .from("files")
     .select("id, name")
-    .in("room_id", roomIds)
+    .eq("owner_id", ownerId)
     .eq("status", "active")
     .order("created_at", { ascending: false })
     .limit(FILE_CONTEXT_MAX_FILES);
@@ -100,12 +101,51 @@ async function buildFileContext(admin: AdminClient, roomIds: string[]): Promise<
   return parts.join("\n\n");
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// PDF 不進 buildFileContext 的文字切段流程（file-register 從來不對 PDF 做文字擷取），
+// 改成把檔案本體下載下來、轉 base64，讓 provider adapter 當作原生文件輸入附加到請求裡
+// （brainstorms/2026-09-23-gpt-audit-followups.md Q14/Q15）。
+export async function buildPdfDocuments(admin: AdminClient, ownerId: string): Promise<DocumentAttachment[]> {
+  const { data: files } = await admin
+    .from("files")
+    .select("bucket, object_path, name")
+    .eq("owner_id", ownerId)
+    .eq("status", "active")
+    .eq("mime_type", "application/pdf")
+    .order("created_at", { ascending: false })
+    .limit(PDF_CONTEXT_MAX_FILES);
+
+  if (!files || files.length === 0) return [];
+
+  const documents: DocumentAttachment[] = [];
+  for (const file of files) {
+    const { data: blob, error } = await admin.storage.from(file.bucket).download(file.object_path);
+    if (error || !blob) {
+      console.error("下載 PDF 以附加原生文件輸入失敗", file.object_path, error);
+      continue;
+    }
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    documents.push({ name: file.name, mimeType: "application/pdf", base64: bytesToBase64(bytes) });
+  }
+  return documents;
+}
+
 export async function buildWorkspaceContext(admin: AdminClient, roomId: string): Promise<string> {
-  const roomIds = await resolveWorkspaceRoomIds(admin, roomId);
+  const ownerId = await resolveWorkspaceOwnerId(admin, roomId);
+  if (!ownerId) return "";
+
   const [notes, tasks, files] = await Promise.all([
-    buildNotesContext(admin, roomIds),
-    buildTasksContext(admin, roomIds),
-    buildFileContext(admin, roomIds),
+    buildNotesContext(admin, ownerId),
+    buildTasksContext(admin, ownerId),
+    buildFileContext(admin, ownerId),
   ]);
 
   const sections: string[] = [];

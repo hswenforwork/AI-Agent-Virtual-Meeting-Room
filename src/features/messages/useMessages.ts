@@ -62,6 +62,40 @@ export function useMessages(roomId: string) {
   return query;
 }
 
+// 往上捲動載入更舊訊息（brainstorms/2026-09-23-gpt-audit-followups.md Q10）：畫面固定只抓
+// 最新 200 則，超過的訊息還在資料庫裡、只是預設看不到，這個 hook 補上「向前翻一頁」的能力。
+export function useLoadOlderMessages(roomId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (): Promise<{ loaded: number }> => {
+      const current = queryClient.getQueryData<MessageRow[]>(["messages", roomId]) ?? [];
+      const oldest = current[0];
+      if (!oldest) return { loaded: 0 };
+
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("room_id", roomId)
+        .lt("created_at", oldest.created_at)
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+
+      const older = (data ?? []).reverse();
+      if (older.length === 0) return { loaded: 0 };
+
+      queryClient.setQueryData<MessageRow[]>(["messages", roomId], (prev) => {
+        const prevList = prev ?? [];
+        const existingIds = new Set(prevList.map((m) => m.id));
+        return [...older.filter((m) => !existingIds.has(m.id)), ...prevList];
+      });
+
+      return { loaded: older.length };
+    },
+  });
+}
+
 export function useSendMessage(roomId: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();

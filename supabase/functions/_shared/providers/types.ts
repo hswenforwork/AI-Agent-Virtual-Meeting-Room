@@ -17,16 +17,46 @@ export interface ChatMessage {
   content: string;
 }
 
+// 對應 brainstorms/2026-09-23-gpt-audit-followups.md Q4：三家供應商真正的 tool use，
+// 目前只有一個工具（loop_in_agent，見 agentCollaboration.ts），先用固定的簡單 JSON Schema
+// 形狀（object + string properties + enum），不需要更複雜的巢狀結構。
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+    required: string[];
+  };
+}
+
+export interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+// 對應 brainstorms/2026-09-23-gpt-audit-followups.md Q14/Q15：PDF 走三家供應商各自的
+// 原生文件輸入（base64），不再靠本地解析庫擷取文字。附加到 messages 裡最後一則
+// user 訊息的內容前面（三家的文件輸入都是「訊息內容的一個 block」，不是獨立欄位）。
+export interface DocumentAttachment {
+  name: string;
+  mimeType: string;
+  base64: string;
+}
+
 export interface GenerateRequest {
   systemPrompt: string;
   messages: ChatMessage[];
   model: string;
   maxOutputTokens: number;
+  tools?: ToolDefinition[];
+  documents?: DocumentAttachment[];
 }
 
 export interface GenerateResult {
   text: string;
   usage: { inputTokens: number; outputTokens: number };
+  toolCall?: ToolCall;
 }
 
 export interface ProviderError {
@@ -41,6 +71,7 @@ export interface ModelOption {
 
 export interface StreamUsage {
   usage: { inputTokens: number; outputTokens: number };
+  toolCall?: ToolCall;
 }
 
 export interface AIProvider {

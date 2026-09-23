@@ -161,25 +161,32 @@ Deno.serve(async (req) => {
     const functionsBase = `${Deno.env.get("SUPABASE_URL")}/functions/v1`;
     const internalSecret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // 依序觸發，避免免費/低額度層瞬間打滿 RPM（對應原始規劃文件 12.3 節）。
+    // 平行觸發所有被點名的代理（brainstorms/2026-09-23-gpt-audit-followups.md Q2）：
+    // 原本依序 await 每一位代理回完才觸發下一位，是為了避免打滿 RPM；但三家供應商各自
+    // 是獨立的帳號、獨立算額度，依序執行不會降低任何一家的請求量，只會讓使用者等更久，
+    // 也讓後面的代理讀歷史訊息時看到前面已完成的回覆，跟文件承諾的「各自獨立回答、
+    // 平行並排顯示」不符（agent-run 那邊另外用 reply_to_id 過濾同一批次的其他代理回覆
+    // 來保證獨立，不依賴這裡的執行順序）。
     // 用 EdgeRuntime.waitUntil() 包起來：一旦這個 handler 把 Response 送出去，
     // Edge Function 的執行環境隨時可能被提前收回，沒有 waitUntil() 的話，
     // 這裡「射後不理」的 fetch 常常來不及送到 agent-run 就被中斷。
     const dispatchAgentRuns = async () => {
-      for (const runId of runIds) {
-        try {
-          await fetch(`${functionsBase}/agent-run`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              authorization: `Bearer ${internalSecret}`,
-            },
-            body: JSON.stringify({ runId }),
-          });
-        } catch (err) {
-          console.error("觸發 agent-run 失敗", runId, err);
-        }
-      }
+      await Promise.all(
+        runIds.map(async (runId) => {
+          try {
+            await fetch(`${functionsBase}/agent-run`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${internalSecret}`,
+              },
+              body: JSON.stringify({ runId }),
+            });
+          } catch (err) {
+            console.error("觸發 agent-run 失敗", runId, err);
+          }
+        }),
+      );
     };
 
     // deno-lint-ignore no-undef

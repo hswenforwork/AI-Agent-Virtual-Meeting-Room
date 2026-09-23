@@ -29,6 +29,9 @@ export interface RoomRow {
   archived_at: string | null;
   last_message_at: string;
   title_generated: boolean;
+  // 對話自動摘要（brainstorms/2026-09-23-gpt-audit-followups.md Q11-Q13）
+  conversation_summary: string;
+  summary_covered_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -73,9 +76,12 @@ export interface MessageRow {
   created_at: string;
 }
 
+// room_id 是可為 null 的「來源房間」參考欄位（brainstorms/2026-09-23-gpt-audit-followups.md
+// Q1）：owner_id 才是真正的歸屬，來源房間被刪除時 room_id 會變成 null，資料本身不受影響。
 export interface NoteRow {
   id: string;
-  room_id: string;
+  room_id: string | null;
+  owner_id: string;
   title: string;
   content: string;
   created_by: string | null;
@@ -85,7 +91,8 @@ export interface NoteRow {
 
 export interface TaskRow {
   id: string;
-  room_id: string;
+  room_id: string | null;
+  owner_id: string;
   title: string;
   description: string | null;
   status: TaskStatus;
@@ -96,7 +103,8 @@ export interface TaskRow {
 
 export interface FileRow {
   id: string;
-  room_id: string;
+  room_id: string | null;
+  owner_id: string;
   bucket: string;
   object_path: string;
   name: string;
