@@ -1,6 +1,6 @@
 # 任務裡被諮詢的 AI 也要自己發獨立訊息：腦力激盪／探索紀錄
 日期：2026-09-23 · 目標：統一各 AI 自己回復（不管一般聊天還是任務），讓使用者能確認 AI 之間溝通是否順暢
-狀態：進行中
+狀態：訪談完成，待確認是否還有補充後開始實作
 背景來源：`supabase/functions/worker-task-start/index.ts`（`handleConsultOtherAi()`）、
 `supabase/functions/_shared/providers/gemini.ts`（`consultGemini()`）、
 `supabase/functions/_shared/agentCollaboration.ts`（`spawnLoopInRun()`，一般聊天已有的對照組）、
@@ -50,5 +50,20 @@
   Gemini 自己的訊息時，SUMMARY 不要重複代答結果，改成指引使用者去看 Gemini 自己的
   回答（例如「已請教 Gemini，答案請見上方 Gemini 的訊息」）。
 
+### Q5：要不要顯示 token 用量
+- 問題：這則 Gemini 獨立訊息要不要也顯示 token 用量（需要額外接上 `consultGemini()`
+  目前完全沒追蹤過的 usage 數字），還是先不管、留空白就好？
+- 已記錄：也顯示，跟既有機制一致。`consultGemini()` 改成回傳 usage，寫進這則新訊息的
+  `input_tokens`/`output_tokens`。
+
+## 摘要／重要決策
+1. **並存**：Claude 進度日誌繼續顯示「正在詢問 Gemini」，另外新增 Gemini 自己的獨立
+   訊息，不互相取代。
+2. **回覆對象**：Gemini 的獨立訊息 `reply_to_id` 指向任務卡片本身。
+3. **多次呼叫**：每次呼叫 `consult_other_ai` 都各自發一則獨立訊息，不去重、不限制。
+4. **SUMMARY 措辭**：更新工具說明/系統提示詞，要求 Claude 不重複代答 Gemini 的結果，
+   改成指引使用者去看 Gemini 自己的訊息。
+5. **Token 用量**：`consultGemini()` 也回傳 usage，寫進這則新訊息，跟既有顯示機制一致。
+
 ## 待釐清事項
-（隨訪談持續更新）
+（都已解決，見上）
