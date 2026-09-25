@@ -490,20 +490,19 @@ async function upsertUsage(
   agentId: string,
   usage: { inputTokens: number; outputTokens: number },
 ) {
-  const { data: existing } = await admin
-    .from("usage_daily")
-    .select("request_count, input_tokens, output_tokens")
-    .eq("usage_date", usageDate)
-    .eq("room_id", roomId)
-    .eq("agent_id", agentId)
-    .maybeSingle();
-
-  await admin.from("usage_daily").upsert({
-    usage_date: usageDate,
-    room_id: roomId,
-    agent_id: agentId,
-    request_count: (existing?.request_count ?? 0) + 1,
-    input_tokens: (existing?.input_tokens ?? 0) + usage.inputTokens,
-    output_tokens: (existing?.output_tokens ?? 0) + usage.outputTokens,
+  // 項目 16 修正：原本「先讀現有值、應用程式層加 1、再 upsert 寫回去」中間沒有鎖，
+  // 同一個代理同一天有兩個 agent_run 幾乎同時完成時，會讀到同一個舊值、各自加 1，
+  // 後寫入的覆蓋掉先寫入的，少算一次用量。改呼叫 increment_usage_daily()
+  // （migrations/0024），用資料庫端原子的 ON CONFLICT DO UPDATE SET x = x + ... 累加，
+  // 不會有任何一次併發呼叫的加總被覆蓋掉。
+  const { error } = await admin.rpc("increment_usage_daily", {
+    p_usage_date: usageDate,
+    p_room_id: roomId,
+    p_agent_id: agentId,
+    p_input_tokens: usage.inputTokens,
+    p_output_tokens: usage.outputTokens,
   });
+  if (error) {
+    console.error("累加用量統計失敗", roomId, agentId, error);
+  }
 }

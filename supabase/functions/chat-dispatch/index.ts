@@ -14,6 +14,9 @@ import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
 import { getUserProviderKey, type ProviderSlug } from "../_shared/vault.ts";
 
 const MAX_AGENT_RUNS_PER_MESSAGE = Number(Deno.env.get("MAX_AGENT_RUNS_PER_MESSAGE") ?? "4");
+const AGENT_RUN_FETCH_TIMEOUT_MS = Number(Deno.env.get("AGENT_RUN_FETCH_TIMEOUT_MS") ?? "10000");
+const AGENT_RUN_FETCH_MAX_ATTEMPTS = 3;
+const AGENT_RUN_FETCH_RETRY_DELAYS_MS = [500, 1500];
 const TITLE_MAX_OUTPUT_TOKENS = 30;
 const TITLE_MODEL = Deno.env.get("DEFAULT_CLAUDE_MODEL") ?? "claude-sonnet-5";
 const TITLE_SYSTEM_PROMPT =
@@ -138,6 +141,14 @@ Deno.serve(async (req) => {
       });
     }
 
+    // 項目 7 修正：同一則訊息可能因為前端網路逾時、使用者連點等原因重複呼叫
+    // chat-dispatch。原本這裡每次都直接 insert 一筆新的 agent_runs，會讓同一個
+    // 代理對同一則訊息重複回覆、也重複打一次真的會計費的 LLM 呼叫。現在
+    // agent_runs(trigger_message_id, agent_id)（排除 loop-in）有唯一索引
+    // （見 migrations/0021），insert 撞到唯一索引（Postgres unique_violation，
+    // code 23505）就代表這個代理已經有一筆執行紀錄了：只有在那筆還卡在 queued
+    // （代表上一次插入成功後、觸發 agent-run 那一步卻沒有真的送出去）才重新觸發，
+    // 其餘狀態（running/completed/failed）代表已經在處理或已經處理完，不重複觸發。
     const runIds: string[] = [];
     for (const agentId of targetAgentIds) {
       const { data: run, error: runErr } = await admin
@@ -151,10 +162,24 @@ Deno.serve(async (req) => {
         .select("id")
         .single();
 
-      if (runErr || !run) {
+      if (runErr) {
+        if (runErr.code === "23505") {
+          const { data: existing } = await admin
+            .from("agent_runs")
+            .select("id, status")
+            .eq("trigger_message_id", messageId)
+            .eq("agent_id", agentId)
+            .eq("is_loop_in", false)
+            .maybeSingle();
+          if (existing && existing.status === "queued") {
+            runIds.push(existing.id);
+          }
+          continue;
+        }
         console.error("建立 agent_run 失敗", runErr);
         continue;
       }
+      if (!run) continue;
       runIds.push(run.id);
     }
 
@@ -170,23 +195,48 @@ Deno.serve(async (req) => {
     // 用 EdgeRuntime.waitUntil() 包起來：一旦這個 handler 把 Response 送出去，
     // Edge Function 的執行環境隨時可能被提前收回，沒有 waitUntil() 的話，
     // 這裡「射後不理」的 fetch 常常來不及送到 agent-run 就被中斷。
+    //
+    // 項目 7 修正：原本這個 fetch 不檢查回應狀態碼、失敗也只是 log 一行就結束，
+    // 讓 agent_runs 永遠卡在 queued——使用者看不到任何回覆，也看不到任何錯誤
+    // 提示，UI 上就是無限轉圈。現在加上逾時（AbortController）、有限次重試（含
+    // 退避間隔），重試用盡就把這筆 agent_run 標成 failed，前端才有機會顯示錯誤
+    // 狀態而不是永遠卡住。
+    const triggerAgentRun = async (runId: string) => {
+      for (let attempt = 1; attempt <= AGENT_RUN_FETCH_MAX_ATTEMPTS; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), AGENT_RUN_FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(`${functionsBase}/agent-run`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${internalSecret}`,
+            },
+            body: JSON.stringify({ runId }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (response.ok) return;
+          console.error("觸發 agent-run 回傳非成功狀態", runId, attempt, response.status);
+        } catch (err) {
+          clearTimeout(timeoutId);
+          console.error("觸發 agent-run 失敗", runId, attempt, err);
+        }
+        if (attempt < AGENT_RUN_FETCH_MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, AGENT_RUN_FETCH_RETRY_DELAYS_MS[attempt - 1]));
+        }
+      }
+      // 只有還在 queued 才蓋成 failed：避免蓋掉 agent-run 其實已經收到請求、
+      // 只是回應在我們判定逾時之後才送達、自己把狀態更新成別的值的情況。
+      await admin
+        .from("agent_runs")
+        .update({ status: "failed", error_code: "dispatch_failed", updated_at: new Date().toISOString() })
+        .eq("id", runId)
+        .eq("status", "queued");
+    };
+
     const dispatchAgentRuns = async () => {
-      await Promise.all(
-        runIds.map(async (runId) => {
-          try {
-            await fetch(`${functionsBase}/agent-run`, {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${internalSecret}`,
-              },
-              body: JSON.stringify({ runId }),
-            });
-          } catch (err) {
-            console.error("觸發 agent-run 失敗", runId, err);
-          }
-        }),
-      );
+      await Promise.all(runIds.map((runId) => triggerAgentRun(runId)));
     };
 
     // deno-lint-ignore no-undef
