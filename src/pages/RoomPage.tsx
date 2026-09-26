@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { LayoutGrid, MessageSquare, LogOut, Menu, Settings, ChevronLeft, ChevronRight } from "lucide-react";
 import { ChatPanel } from "../features/messages/ChatPanel";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
@@ -12,6 +12,9 @@ const COLLAPSED_WIDTH = 56;
 
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
+  // 共享知識來源連結（?highlight=messageId，見 knowledgeContext.ts）用來跳到並高亮特定訊息。
+  const [searchParams] = useSearchParams();
+  const highlightMessageId = searchParams.get("highlight");
   const [mobileView, setMobileView] = useState<"chat" | "workspace">("chat");
   const { openDrawer } = useLayoutContext();
   const { data: rooms } = useRooms();
@@ -65,7 +68,7 @@ export function RoomPage() {
       </header>
       <div className="flex min-h-0 flex-1">
         <div className={`min-h-0 flex-1 ${mobileView === "workspace" ? "hidden md:block" : "block"}`}>
-          <ChatPanel roomId={roomId} />
+          <ChatPanel roomId={roomId} highlightMessageId={highlightMessageId} />
         </div>
         <div
           className={`relative min-h-0 w-full shrink-0 md:w-auto ${

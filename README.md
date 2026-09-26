@@ -49,6 +49,7 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0016_message_token_usage.sql`（訊息泡泡顯示 token 用量，見下方「附加設定」）
    - `supabase/migrations/0017_workspace_realtime.sql`（記事本/待辦/檔案夾即時更新，見下方「附加設定」）
    - `supabase/migrations/0018_worker_task_notebook_tool.sql`（工作型代理寫進記事本/待辦事項，見下方「附加設定」）
+   - `supabase/migrations/0019_shared_knowledge.sql`（跨聊天室共享知識系統，見下方「附加設定」）
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -225,6 +226,65 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0018_worker_task_notebook_tool.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
+### 附加設定：跨聊天室共享知識系統（選用但建議）
+
+新增「共享知識」分頁：由你自己確認的長期背景（目標／專案／用語／工作規則／事實）、只追加
+的決策紀錄（取代舊決策要明確指定，不會悄悄覆蓋）、每則知識/決策的來源索引（區分「知道
+存在」跟「已驗證內容」）、代理在聊天中主動提出的知識/決策/關聯草稿（要你自己確認、修改
+或拒絕才會變成正式資料）、依證據檢查的稽核報告，以及可搜尋、可點擊的 2D 知識關聯圖。
+跟記事本/待辦事項一樣是跨聊天室共用（依帳號、不依房間），設計與借鏡對照見
+[`docs/AI-Partner借鏡對照.md`](docs/AI-Partner借鏡對照.md)。
+
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
+`supabase/migrations/0019_shared_knowledge.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+
+**這個 migration 也會新增兩個 Edge Function**（`.github/workflows/deploy-functions.yml` 會自動
+部署，不用手動處理）：
+
+- `knowledge-audit`：手動觸發一次稽核檢查（「共享知識 → 稽核」分頁的「立即檢查」按鈕），
+  用呼叫者自己的登入身分查詢，不需要額外的權限設定。
+
+**選用：排程自動稽核**（這個 repo 不會幫你打開，你要自己決定要不要、多常跑，避免非預期的
+費用或通知）。
+
+`knowledge-audit` 支援兩種呼叫方式：一般使用者用自己的登入身分（JWT）手動觸發（前端「立即
+檢查」按鈕就是這樣呼叫的），或是帶 `service_role` key＋明確的 `ownerId` 觸發（給排程用）。
+**排程一定要用第二種**——使用者登入的 JWT 通常一小時左右就會過期，寫死存進 `pg_cron` 的排程
+SQL 裡遲早會開始失敗，不是真正「可持續使用」的排程；`service_role` key 本身不會過期，才適合
+放進長期排程。
+
+`service_role` key 等同整個資料庫的完整存取權，**絕對不要直接寫在 SQL 裡**（`cron.job` 這張表
+本身是明文可查的）。改用 Supabase Vault 存起來，排程執行當下才解密取出：
+
+```sql
+-- 1. 確認 pg_cron 與 pg_net 兩個 extension 已啟用（Database → Extensions）
+
+-- 2. 把 service_role key 存進 Vault（只需要做一次；<service-role-key> 到
+--    Project Settings → API 複製，不要外流）
+select vault.create_secret('<service-role-key>', 'knowledge_audit_service_key');
+
+-- 3. 建立排程（範例：每週一早上 9 點 UTC；<project-ref> 換成你的專案 ref，
+--    <owner-user-id> 換成 auth.users 裡要稽核的那個使用者 id）
+select cron.schedule(
+  'knowledge-audit-weekly',
+  '0 9 * * 1',
+  $$
+  select net.http_post(
+    url := 'https://<project-ref>.functions.supabase.co/knowledge-audit',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'knowledge_audit_service_key'),
+      'content-type', 'application/json'
+    ),
+    body := jsonb_build_object('ownerId', '<owner-user-id>')
+  );
+  $$
+);
+```
+
+要停用時執行 `select cron.unschedule('knowledge-audit-weekly');`。這個範例一次只排一個帳號；
+多個使用者要各自排一份（`cron.schedule` 名稱要不同），這個 repo 沒有另外做「幫所有帳號各跑
+一次」的批次版本。
+
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
 `.github/workflows/deploy-functions.yml` 已經設定好，只要 repo 有兩個 Secrets，push 到 `main`
@@ -319,3 +379,7 @@ npm run build      # 建置到 dist/
 - 沒有角色分工代理（研究/程式/測試），MVP 核心是多供應商比較，不是角色協作。
 - 「工作型代理」（任務卡片、沙盒執行）是第一版：只支援單一 session 跑到底、單一任務不會被拆成多個回合對話；
   Managed Agents 目前是 Anthropic beta 功能，介面與行為未來可能調整。
+- 「共享知識系統」的相關度排序是關鍵字重疊＋更新時間，沒有做向量嵌入／語意搜尋；工作型代理
+  （沙盒任務）目前只會讀取共享知識，不會主動提出知識/決策草稿（一般聊天才會）；知識關聯圖
+  是手繪的簡易 2D 力導向佈局，沒有另外安裝圖形函式庫。詳見
+  [`docs/AI-Partner借鏡對照.md`](docs/AI-Partner借鏡對照.md) 最後一節。

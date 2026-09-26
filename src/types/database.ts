@@ -161,3 +161,125 @@ export interface UsageDailyRow {
   output_tokens: number;
   errors: number;
 }
+
+// 跨聊天室共享知識系統（docs/AI-Partner借鏡對照.md、supabase/migrations/0019_shared_knowledge.sql）
+export type KnowledgeCategory = "goal" | "project" | "term" | "rule" | "fact" | "other";
+export type KnowledgeItemStatus = "active" | "archived";
+export type DecisionStatus = "active" | "superseded";
+export type KnowledgeSourceType = "message" | "note" | "task" | "file" | "external_url";
+export type KnowledgeSourceStatus = "valid" | "stale" | "invalid";
+export type KnowledgeRelation = "related" | "supports" | "depends_on" | "contradicts" | "supersedes";
+export type KnowledgeLinkStatus = "confirmed" | "proposed";
+export type KnowledgeProposalType = "knowledge" | "decision" | "correction" | "question" | "link";
+export type KnowledgeProposalStatus = "pending" | "accepted" | "edited" | "rejected";
+
+export interface KnowledgeItemRow {
+  id: string;
+  owner_id: string;
+  category: KnowledgeCategory;
+  title: string;
+  body: string;
+  status: KnowledgeItemStatus;
+  expires_at: string | null;
+  review_interval_days: number | null;
+  source_room_id: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string;
+  origin_proposal_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DecisionRow {
+  id: string;
+  owner_id: string;
+  title: string;
+  decision_text: string;
+  reasoning: string;
+  alternatives: string | null;
+  status: DecisionStatus;
+  supersedes_id: string | null;
+  superseded_by_id: string | null;
+  decided_at: string;
+  source_room_id: string | null;
+  created_by: string | null;
+  origin_proposal_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeSourceRow {
+  id: string;
+  owner_id: string;
+  subject_type: "knowledge_item" | "decision";
+  subject_id: string;
+  source_type: KnowledgeSourceType;
+  room_id: string | null;
+  message_id: string | null;
+  note_id: string | null;
+  task_id: string | null;
+  file_id: string | null;
+  external_url: string | null;
+  verified: boolean;
+  content_snapshot: string | null;
+  status: KnowledgeSourceStatus;
+  created_at: string;
+  last_checked_at: string | null;
+  checked_by: string | null;
+}
+
+export interface KnowledgeLinkRow {
+  id: string;
+  owner_id: string;
+  from_type: "knowledge_item" | "decision";
+  from_id: string;
+  to_type: "knowledge_item" | "decision";
+  to_id: string;
+  relation: KnowledgeRelation;
+  status: KnowledgeLinkStatus;
+  reasoning: string | null;
+  created_by: string | null;
+  proposed_by_agent_id: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  origin_proposal_id: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeProposalRow {
+  id: string;
+  owner_id: string;
+  proposal_type: KnowledgeProposalType;
+  payload: Record<string, unknown>;
+  reasoning: string;
+  source_message_id: string | null;
+  source_room_id: string | null;
+  proposed_by_agent_id: string | null;
+  status: KnowledgeProposalStatus;
+  resolved_knowledge_item_id: string | null;
+  resolved_decision_id: string | null;
+  resolved_link_id: string | null;
+  resolution_note: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeAuditFinding {
+  finding_id: string;
+  category: string;
+  severity: "confirmed" | "needs_review" | "suggestion";
+  message: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface KnowledgeAuditReportRow {
+  id: string;
+  owner_id: string;
+  run_at: string;
+  triggered_by: "manual" | "schedule";
+  summary: string;
+  findings: KnowledgeAuditFinding[];
+  stats: Record<string, number>;
+  created_at: string;
+}

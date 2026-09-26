@@ -24,7 +24,15 @@ const STATUS_COLOR: Record<string, string> = {
   cancelled: "bg-slate-200 text-slate-600",
 };
 
-export function TaskCardMessage({ message, agentsById }: { message: MessageRow; agentsById: Map<string, AgentRow> }) {
+export function TaskCardMessage({
+  message,
+  agentsById,
+  highlighted,
+}: {
+  message: MessageRow;
+  agentsById: Map<string, AgentRow>;
+  highlighted?: boolean;
+}) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,8 +53,12 @@ export function TaskCardMessage({ message, agentsById }: { message: MessageRow; 
   };
 
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[90%] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm">
+    <div id={`message-${message.id}`} className="flex justify-start">
+      <div
+        className={`max-w-[90%] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm ${
+          highlighted ? "ring-2 ring-amber-400" : ""
+        }`}
+      >
         <div className="mb-1 flex items-center gap-2">
           <span className="text-xs font-semibold text-slate-500">{agent?.name ?? "工作型代理"} · 任務卡片</span>
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_COLOR[status] ?? "bg-slate-100 text-slate-600"}`}>
