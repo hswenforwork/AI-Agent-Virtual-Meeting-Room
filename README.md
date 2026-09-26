@@ -49,7 +49,25 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0016_message_token_usage.sql`（訊息泡泡顯示 token 用量，見下方「附加設定」）
    - `supabase/migrations/0017_workspace_realtime.sql`（記事本/待辦/檔案夾即時更新，見下方「附加設定」）
    - `supabase/migrations/0018_worker_task_notebook_tool.sql`（工作型代理寫進記事本/待辦事項，見下方「附加設定」）
-   - `supabase/migrations/0019_shared_knowledge.sql`（跨聊天室共享知識系統，見下方「附加設定」）
+   - `supabase/migrations/0019_cross_account_security_fixes.sql`（跨帳號權限隔離修正：自行加入別人房間、
+     跨房間點名、核准競態，**必要修正，不是選用附加設定**，新建立的專案也要套用）
+   - `supabase/migrations/0020_shared_knowledge.sql`（跨聊天室共享知識系統，見下方「附加設定」）
+   - `supabase/migrations/0021_knowledge_retrieval_indexes.sql`（跟隨 0020 的知識檢索效能索引，
+     有套用 0020 才需要這個）
+   - `supabase/migrations/0022_agent_run_dispatch_idempotency.sql`（訊息派送冪等，防止同一則訊息
+     重複觸發同一個代理回覆，**必要修正**）
+   - `supabase/migrations/0023_send_message_with_mentions.sql`（訊息本體與 @提及 原子寫入，
+     **必要修正**）
+   - `supabase/migrations/0024_conversation_summary_lock.sql`（對話摘要並行鎖，避免積壓漏摘要，
+     **必要修正**）
+   - `supabase/migrations/0025_usage_daily_atomic_increment.sql`（用量統計原子累加，避免併發低估，
+     **必要修正**）
+
+   > **已經是既有專案（資料庫已經套用過 0001~0018）**：`0019`、`0022`、`0023`、`0024`、`0025`
+   > 這五個標「必要修正」的 migration 請務必依序補套用，不是可以跳過的選用附加設定——分別修正
+   > 跨帳號權限隔離漏洞、訊息重複派送、訊息半成品寫入、對話摘要漏訊息、用量統計併發低估。
+   > `0020`／`0021`（共享知識系統）才是真正選用，看下方「附加設定：跨聊天室共享知識系統」
+   > 再決定要不要套用。
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -235,8 +253,9 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
 跟記事本/待辦事項一樣是跨聊天室共用（依帳號、不依房間），設計與借鏡對照見
 [`docs/AI-Partner借鏡對照.md`](docs/AI-Partner借鏡對照.md)。
 
-**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
-`supabase/migrations/0019_shared_knowledge.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
+**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，依序貼上並執行
+`supabase/migrations/0020_shared_knowledge.sql`、`supabase/migrations/0021_knowledge_retrieval_indexes.sql`
+（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
 **這個 migration 也會新增兩個 Edge Function**（`.github/workflows/deploy-functions.yml` 會自動
 部署，不用手動處理）：

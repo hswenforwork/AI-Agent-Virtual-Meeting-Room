@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
     // chat-dispatch。原本這裡每次都直接 insert 一筆新的 agent_runs，會讓同一個
     // 代理對同一則訊息重複回覆、也重複打一次真的會計費的 LLM 呼叫。現在
     // agent_runs(trigger_message_id, agent_id)（排除 loop-in）有唯一索引
-    // （見 migrations/0021），insert 撞到唯一索引（Postgres unique_violation，
+    // （見 migrations/0022），insert 撞到唯一索引（Postgres unique_violation，
     // code 23505）就代表這個代理已經有一筆執行紀錄了：只有在那筆還卡在 queued
     // （代表上一次插入成功後、觸發 agent-run 那一步卻沒有真的送出去）才重新觸發，
     // 其餘狀態（running/completed/failed）代表已經在處理或已經處理完，不重複觸發。

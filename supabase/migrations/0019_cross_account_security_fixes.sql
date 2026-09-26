@@ -3,10 +3,11 @@
 -- 項目 2（approval-decide 的 file.delete 缺 owner 驗證）純粹是 Edge Function 程式碼修正，
 -- 不需要 schema 變更，見 supabase/functions/approval-decide/index.ts。
 --
--- 這個檔案從最新 main（fa126b5）獨立分支出來，跟尚未合併的 PR #44
--- （supabase/migrations/0019_shared_knowledge.sql）並存在同一個序號——兩者其中一個
--- 合併進 main 後，另一個未合併的 PR 需要把自己的 migration 重新編號成 0020，
--- 由後合併的一方負責調整，不由這個 PR 片面決定順序。
+-- 這個檔案原本從最新 main（fa126b5）獨立分支出來，跟尚未合併的 PR #44
+-- （原本也叫 0019_shared_knowledge.sql）並存在同一個序號；整合分支（PR #45/#44/#46
+-- 三個 PR 合併，見 docs/17項計劃-ABC整合測試報告.md）把這個檔案保留為 0019（最先合併的
+-- 基礎安全修正），PR #44 的 migration 依實際依賴改編號成 0020/0021，PR #46 改編號成
+-- 0022~0025，不再各自獨立編號。
 
 -- ---------------------------------------------------------------------------
 -- 項目 1：room_members_insert_owner 移除自行入會分支

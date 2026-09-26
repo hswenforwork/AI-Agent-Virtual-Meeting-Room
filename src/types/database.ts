@@ -162,7 +162,7 @@ export interface UsageDailyRow {
   errors: number;
 }
 
-// 跨聊天室共享知識系統（docs/AI-Partner借鏡對照.md、supabase/migrations/0019_shared_knowledge.sql）
+// 跨聊天室共享知識系統（docs/AI-Partner借鏡對照.md、supabase/migrations/0020_shared_knowledge.sql）
 export type KnowledgeCategory = "goal" | "project" | "term" | "rule" | "fact" | "other";
 export type KnowledgeItemStatus = "active" | "archived";
 export type DecisionStatus = "active" | "superseded";

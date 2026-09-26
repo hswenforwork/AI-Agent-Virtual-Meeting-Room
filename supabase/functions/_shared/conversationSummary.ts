@@ -90,7 +90,7 @@ export async function maybeSummarizeConversation(
     // 涵蓋不完（超過 BACKLOG_FETCH_CAP），covered_until 也只會推進到「這批實際摘要進去
     // 的最新一則」為止，下一次呼叫會從那裡繼續接著涵蓋，不會有任何訊息被永久跳過
     // （原本 desc + LIMIT 抓「最新一批」的寫法，積壓超過 BACKLOG_FETCH_CAP 時，
-    // 中間比這批更舊的積壓會被永久跳過，见 migrations/0023 的說明）。
+    // 中間比這批更舊的積壓會被永久跳過，见 migrations/0024 的說明）。
     const { data: rows } = await admin
       .from("messages")
       .select("sender_type, content, created_at")

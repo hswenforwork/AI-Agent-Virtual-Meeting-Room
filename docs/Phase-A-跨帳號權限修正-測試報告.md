@@ -5,6 +5,11 @@
 分支：`claude/phase-a-cross-account-security`
 範圍：17 項修正計劃「A．權限隔離與核准」——項目 1、2、3、8
 
+> **編號更新（三 PR 整合時）**：這份報告當初測試時，這裡的 migration 就叫
+> `0019_cross_account_security_fixes.sql`，整合後仍然是 `0019`（三個 PR 合併時保留最先
+> 合併的基礎安全修正在 0019，PR #44／#46 的 migration 往後編號）。完整編號對照與三個 PR
+> 合在一起重新驗證的結果見 [`docs/17項計劃-ABC整合測試報告.md`](17項計劃-ABC整合測試報告.md)。
+
 ## 0. 測試方法（比之前幾輪更嚴謹的地方）
 
 跟先前 PR #44 幾輪 review 用簡化 fixture 測 RLS/trigger 不同，這次：

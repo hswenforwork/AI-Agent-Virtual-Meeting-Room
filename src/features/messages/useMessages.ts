@@ -114,7 +114,7 @@ export function useSendMessage(roomId: string) {
 
       // 項目 9 修正：訊息本體 + mentions 原本是兩個分開的 insert，第一步成功、第二步
       // 失敗就會留下一則沒有 mention、也永遠不會被 dispatch 的半成品訊息，使用者重送
-      // 又會變成重複訊息。改用 send_message_with_mentions()（migrations/0022）在資料庫
+      // 又會變成重複訊息。改用 send_message_with_mentions()（migrations/0023）在資料庫
       // 端一次交易內完成，並用呼叫端傳入、重試時保持不變的 clientId（見
       // MessageComposer.tsx）當冪等鍵：同一個 clientId 重試會直接拿回既有那筆訊息、
       // 補齊漏掉的 mentions，不會插入第二筆。

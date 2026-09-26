@@ -1,7 +1,7 @@
 // 跨聊天室共享知識系統的前端資料層（docs/AI-Partner借鏡對照.md）。
 // knowledge_items/decisions/knowledge_links/knowledge_proposals 都是 owner_id 直接 RLS，
 // 跟 notes/tasks 的 useNotes.ts 同一種模式：前端直接用 supabase-js CRUD，不用另外開
-// Edge Function；只有「確認/拒絕提案」（跨表操作）走 0019 migration 定義的 RPC，
+// Edge Function；只有「確認/拒絕提案」（跨表操作）走 0020 migration 定義的 RPC，
 // 「稽核」走 knowledge-audit Edge Function（用呼叫者自己的 JWT，見該檔案說明）。
 
 import { useEffect } from "react";

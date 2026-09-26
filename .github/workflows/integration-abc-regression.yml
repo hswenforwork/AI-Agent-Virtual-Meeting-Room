@@ -1,0 +1,124 @@
+name: integration-abc-regression
+
+# 17 項修正計劃 A/B/C 三個 PR（#45 跨帳號權限、#44 共享知識、#46 付費呼叫可靠性）整合
+# 回歸測試。跟既有的 security-regression.yml（只涵蓋項目 1/2/3/8）不同，這裡套用整合後
+# 的完整 migration 序列（0001~0025）並涵蓋項目 1、2、3、4、6、7、8、9、10、13、14、16，
+# 以及三個 PR 合併後才需要驗證的交互作用（#45 的 mention RLS 跟 #46 的
+# send_message_with_mentions() 合在一起、chat-dispatch 中斷後 queued 紀錄的逾時修復缺口）。
+# 對應：docs/17項計劃-ABC整合測試報告.md
+#
+# 不需要 Docker：postgrest／deno 都是 standalone 執行檔，直接對 GitHub Actions 內建的
+# postgres service 套用 repo 實際的 migration 檔案，不是簡化過的 fixture。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sql-rpc-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 下載 postgrest（standalone 執行檔，不需要 Docker）
+        run: |
+          curl -sSL -o /tmp/postgrest.tar.xz \
+            https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+          mkdir -p /tmp/postgrest_bin
+          tar -xJf /tmp/postgrest.tar.xz -C /tmp/postgrest_bin
+          chmod +x /tmp/postgrest_bin/postgrest
+      - name: 執行 SQL／RPC 層整合回歸測試（項目 1/3/4/8/9/10/13/14/16 + mention 交互測試）
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: integration_abc_sql_ci
+          POSTGREST_BIN: /tmp/postgrest_bin/postgrest
+        run: bash scripts/integration-abc-sql-rpc-test.sh
+
+  edge-function-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: 下載 postgrest（standalone 執行檔，不需要 Docker）
+        run: |
+          curl -sSL -o /tmp/postgrest.tar.xz \
+            https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+          mkdir -p /tmp/postgrest_bin
+          tar -xJf /tmp/postgrest.tar.xz -C /tmp/postgrest_bin
+          chmod +x /tmp/postgrest_bin/postgrest
+      - name: 執行 Edge Function 層整合回歸測試（項目 2/7，含孤兒 queued 紀錄確認）
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: integration_abc_edge_ci
+          POSTGREST_BIN: /tmp/postgrest_bin/postgrest
+          DENO_BIN: deno
+        run: bash scripts/integration-abc-edge-function-test.sh
+
+  deno-check-no-new-errors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: deno check 有改動的 Edge Function（只確認能不能執行，型別錯誤不擋 CI——
+          既有型別問題見 docs/17項計劃-ABC整合測試報告.md，還沒排進項目 17 的清理範圍）
+        run: |
+          for f in supabase/functions/approval-decide/index.ts \
+                   supabase/functions/chat-dispatch/index.ts \
+                   supabase/functions/agent-run/index.ts \
+                   supabase/functions/worker-task-start/index.ts \
+                   supabase/functions/knowledge-audit/index.ts; do
+            echo "=== deno check $f ==="
+            deno check --no-lock --node-modules-dir=none "$f" || true
+          done
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build

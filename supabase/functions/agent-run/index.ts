@@ -528,7 +528,7 @@ async function upsertUsage(
   // 項目 16 修正：原本「先讀現有值、應用程式層加 1、再 upsert 寫回去」中間沒有鎖，
   // 同一個代理同一天有兩個 agent_run 幾乎同時完成時，會讀到同一個舊值、各自加 1，
   // 後寫入的覆蓋掉先寫入的，少算一次用量。改呼叫 increment_usage_daily()
-  // （migrations/0024），用資料庫端原子的 ON CONFLICT DO UPDATE SET x = x + ... 累加，
+  // （migrations/0025），用資料庫端原子的 ON CONFLICT DO UPDATE SET x = x + ... 累加，
   // 不會有任何一次併發呼叫的加總被覆蓋掉。
   const { error } = await admin.rpc("increment_usage_daily", {
     p_usage_date: usageDate,
