@@ -103,9 +103,14 @@ Deno.serve(async (req) => {
         }
       }
     } else {
+      // 項目 3 修正（二次驗證，資料庫層的 message_mentions RLS policy 已經擋住新增
+      // 跨房間點名，這裡加上 room_id 篩選當第二層防禦）：只信任「屬於這則訊息所在房間」
+      // 的代理 id，不屬於這個房間的 agent_id 不會出現在 targetAgents 裡，
+      // 下面的 availableIds／targetAgentIds.filter() 就會自然把它排除，不會被觸發執行。
       const { data: targetAgents } = await admin
         .from("agents")
         .select("id, name, provider")
+        .eq("room_id", message.room_id)
         .in("id", targetAgentIds);
 
       const availableIds = new Set<string>();

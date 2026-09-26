@@ -11,7 +11,14 @@ export type AgentRunStatus =
   | "rate_limited"
   | "cancelled";
 export type TaskStatus = "todo" | "in_progress" | "done";
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "executed" | "failed";
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "executing"
+  | "executed"
+  | "failed";
 
 export interface ProfileRow {
   id: string;
