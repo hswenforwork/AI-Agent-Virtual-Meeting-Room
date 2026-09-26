@@ -101,40 +101,47 @@ export function useSendMessage(roomId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ content, mentionAgentIds }: { content: string; mentionAgentIds: string[] }) => {
+    mutationFn: async ({
+      content,
+      mentionAgentIds,
+      clientId,
+    }: {
+      content: string;
+      mentionAgentIds: string[];
+      clientId: string;
+    }) => {
       if (!user) throw new Error("尚未登入");
 
-      const clientId = crypto.randomUUID();
-      const { data: message, error: insertErr } = await supabase
-        .from("messages")
-        .insert({
-          room_id: roomId,
-          sender_type: "user",
-          sender_user_id: user.id,
-          content,
-          status: "completed",
-          client_id: clientId,
-        })
-        .select("*")
-        .single();
-      if (insertErr) throw insertErr;
-
-      if (mentionAgentIds.length > 0) {
-        const { error: mentionErr } = await supabase
-          .from("message_mentions")
-          .insert(mentionAgentIds.map((agentId) => ({ message_id: message.id, agent_id: agentId })));
-        if (mentionErr) throw mentionErr;
-      }
+      // 項目 9 修正：訊息本體 + mentions 原本是兩個分開的 insert，第一步成功、第二步
+      // 失敗就會留下一則沒有 mention、也永遠不會被 dispatch 的半成品訊息，使用者重送
+      // 又會變成重複訊息。改用 send_message_with_mentions()（migrations/0022）在資料庫
+      // 端一次交易內完成，並用呼叫端傳入、重試時保持不變的 clientId（見
+      // MessageComposer.tsx）當冪等鍵：同一個 clientId 重試會直接拿回既有那筆訊息、
+      // 補齊漏掉的 mentions，不會插入第二筆。
+      const { data: message, error: rpcErr } = await supabase.rpc("send_message_with_mentions", {
+        p_room_id: roomId,
+        p_content: content,
+        p_client_id: clientId,
+        p_mention_agent_ids: mentionAgentIds,
+      });
+      if (rpcErr || !message) throw rpcErr ?? new Error("傳送訊息失敗");
 
       queryClient.setQueryData<MessageRow[]>(["messages", roomId], (prev) => {
         const next = prev ?? [];
-        if (next.some((m) => m.id === message.id)) return next;
+        if (next.some((m) => m.id === (message as MessageRow).id)) return next;
         return [...next, message as MessageRow];
       });
 
-      const { error: dispatchErr } = await supabase.functions.invoke("chat-dispatch", {
-        body: { messageId: message.id },
-      });
+      // chat-dispatch 本身已經是冪等的（項目 7：同一則訊息、同一個代理最多只會建立一筆
+      // agent_run），這裡失敗重試一次是安全的，不會造成重複派送。
+      let dispatchErr: { message: string } | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const result = await supabase.functions.invoke("chat-dispatch", {
+          body: { messageId: (message as MessageRow).id },
+        });
+        dispatchErr = result.error;
+        if (!dispatchErr) break;
+      }
       if (dispatchErr) throw dispatchErr;
 
       return message as MessageRow;

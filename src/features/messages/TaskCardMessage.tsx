@@ -84,14 +84,14 @@ export function TaskCardMessage({
           </div>
         )}
 
-        {status === "pending_confirmation" && (
+        {(status === "pending_confirmation" || status === "failed") && (
           <div className="mt-2">
             <button
               onClick={handleStart}
               disabled={starting}
               className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
             >
-              {starting ? "啟動中…" : "開始執行"}
+              {starting ? "啟動中…" : status === "failed" ? "重試" : "開始執行"}
             </button>
             {error && <div className="mt-1 text-xs text-red-600">{error}</div>}
           </div>
