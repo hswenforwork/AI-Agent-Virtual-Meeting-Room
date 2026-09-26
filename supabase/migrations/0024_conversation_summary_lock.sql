@@ -1,0 +1,24 @@
+-- 項目 10 修正：對話摘要不能漏訊息。
+--
+-- 原本 maybeSummarizeConversation() 有兩個獨立問題：
+--
+-- 1. 積壓（backlog）查詢用「最新在前（desc）+ LIMIT」抓要摘要的那批訊息，一旦真正
+--    尚未摘要的訊息數量超過 BACKLOG_FETCH_CAP（300），desc + LIMIT 抓到的永遠是「最新的
+--    300 則」，而 summary_covered_until 最後被推進到這批「最新 300 則」的頭，中間那些
+--    比這批還舊、但還沒被摘要過的訊息（積壓超過 300 則時最舊的那一段）就被永久跳過：
+--    之後 summary_covered_until 已經推到後面，query 用 gt(created_at, summary_covered_until)
+--    再也不會抓到它們，摘要永遠遺漏這一段對話。
+-- 2. 同一個房間的多個 agent_run 平行執行時（chat-dispatch 一次點名多位代理會平行觸發，
+--    見 chat-dispatch/index.ts 的平行派送），每個 agent-run 都會各自呼叫這個函式，
+--    彼此之間沒有任何協調：兩個呼叫都讀到同一份舊的 conversation_summary，各自基於它
+--    生成一份新摘要，後寫入的那次直接覆蓋先寫入的那次——先寫入那次摘要進去的內容
+--    就從最終存檔的摘要裡消失，而且 summary_covered_until 已經被推進過，不會有機會
+--    重新涵蓋。
+--
+-- 這裡加一個簡單的鎖欄位：summary_locked_at。同一時間只有一個呼叫能搶到鎖（用條件式
+-- UPDATE 原子搶占，同一個 pattern 沿用 Phase A #8／Phase C #6 已經驗證過的作法），
+-- 搶不到就直接跳過（代表已經有另一個呼叫在處理），避免重複打一次真的會計費的摘要用
+-- LLM 呼叫，也避免兩份摘要互相覆蓋。鎖有 stale 逾時（見 conversationSummary.ts），
+-- 避免持鎖的呼叫意外中斷（例如 Edge Function 被提前收回）導致鎖永遠卡死。
+
+alter table public.rooms add column if not exists summary_locked_at timestamptz;
