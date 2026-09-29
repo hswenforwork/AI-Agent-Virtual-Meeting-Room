@@ -95,14 +95,14 @@ Deno.serve(async (req) => {
     if (!claimed) return jsonError("這個請求已經處理過了", 409, "already_decided", headers);
 
     try {
-      await executeTool(admin, approval.tool_name, approval.arguments_json, user.id);
+      const executionResult = await executeTool(admin, approval.tool_name, approval.arguments_json, user.id);
       await admin.from("approval_requests").update({ status: "executed" }).eq("id", approvalId);
       await admin.from("audit_logs").insert({
         room_id: approval.room_id,
         actor_type: "user",
         actor_id: user.id,
         action: `${approval.tool_name}.executed`,
-        metadata: approval.arguments_json,
+        metadata: { ...approval.arguments_json, ...executionResult },
       });
       return new Response(JSON.stringify({ status: "executed" }), { headers });
     } catch (execErr) {
@@ -121,7 +121,7 @@ async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   approverId: string,
-) {
+): Promise<Record<string, unknown>> {
   if (toolName === "file.delete") {
     const fileId = args.fileId as string;
     if (!fileId) throw new Error("缺少 fileId");
@@ -134,17 +134,37 @@ async function executeTool(
     // 符合（檔案不存在、不是自己的、或已經是 deleted），一律當成失敗，不能默默回報成功
     // ——用 .select().maybeSingle() 確認實際有動到列，而不是只看 error 是否為 null
     // （Supabase/PostgREST 的 update 在 0 筆符合條件時不會回傳 error，需要另外檢查）。
+    // D 階段項目 15 修正：這裡額外 select 出 bucket／object_path，是因為下面成功之後
+    // 要真的去刪 Storage 物件；.eq("owner_id", approverId) 這個條件保證跨帳號刪檔
+    // （fileId 不是核准者自己的）在這裡就會拿到 0 筆、直接 throw，往下的 Storage
+    // remove() 完全不會被呼叫到——不會有「DB 拒絕了，但 Storage 物件還是被清掉」
+    // 這種矛盾的中間狀態。
     const { data, error } = await admin
       .from("files")
       .update({ status: "deleted", deleted_at: new Date().toISOString() })
       .eq("id", fileId)
       .eq("owner_id", approverId)
       .eq("status", "active")
-      .select("id")
+      .select("bucket, object_path")
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new Error("找不到可刪除的檔案，或這個檔案不屬於你");
-    return;
+
+    // D 階段項目 15 修正（Storage 清理）：原本這裡的註解寫著「物件本身之後由排程
+    // 清理」，但這個排程從來沒有真的做出來——soft delete 只讓 files 這一列在應用層
+    // 看起來消失，Storage 裡的實體物件（跟它佔用的空間）永遠留著。這裡在資料庫狀態
+    // 已經確定改成 deleted 之後（安全關鍵的存取權限收回已經完成），才嘗試真的刪除
+    // Storage 物件——這一步失敗不應該讓整個 file.delete 核准回報失敗，但失敗與否都
+    // 記錄進回傳值，由呼叫端寫進 audit_logs，讓之後要人工排查 Storage 用量/孤兒物件時
+    // 能直接從稽核紀錄查出哪些刪除當下沒有真的清乾淨（見同一個 migration 裡另外
+    // 修改的 room_files_select_member policy：就算 Storage 清理這一步失敗，只要 DB
+    // 的 status 已經不是 active，兩條 SELECT policy 都不會再放行任何人簽出新的下載
+    // 網址，不依賴這一步 Storage 清理是否成功）。
+    const { error: removeErr } = await admin.storage.from(data.bucket).remove([data.object_path]);
+    if (removeErr) {
+      console.error("刪除 Storage 物件失敗（資料庫狀態已經標成 deleted）", data.bucket, data.object_path, removeErr);
+    }
+    return { storageRemoved: !removeErr };
   }
   throw new Error(`未知的工具：${toolName}`);
 }

@@ -8,6 +8,8 @@ name: integration-abc-regression
 # 見 supabase/functions/_shared/agentRunReaper.ts，不再只是「確認缺口存在」）、以及
 # agent-run/index.ts 的原子搶占併發邊界（兩個並發 agent-run 呼叫、reaper 與 agent-run
 # 同時處理同一筆紀錄、已標成 failed 的紀錄不會被遲到的搶占蓋回 running）。
+# 另外接上 D 階段（項目 5、11、12、15：檔案儲存生命週期）的回歸測試，見
+# phase-d-regression 這個 job 跟 docs/Phase-D-檔案儲存生命週期-測試報告.md。
 # 對應：docs/17項計劃-ABC整合測試報告.md
 #
 # 不需要 Docker：postgrest／deno 都是 standalone 執行檔，直接對 GitHub Actions 內建的
@@ -120,6 +122,46 @@ jobs:
           PGDATABASE: integration_abc_knowledge_ci
         run: bash scripts/integration-abc-knowledge-required-test.sh
 
+  phase-d-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: 下載 postgrest（standalone 執行檔，不需要 Docker）
+        run: |
+          curl -sSL -o /tmp/postgrest.tar.xz \
+            https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+          mkdir -p /tmp/postgrest_bin
+          tar -xJf /tmp/postgrest.tar.xz -C /tmp/postgrest_bin
+          chmod +x /tmp/postgrest_bin/postgrest
+      - name: 執行 D 階段整合回歸測試（項目 5/11/12/15：檔案儲存生命週期）
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: phase_d_on_integration_ci
+          POSTGREST_BIN: /tmp/postgrest_bin/postgrest
+          DENO_BIN: deno
+        run: bash scripts/phase-d-regression-test.sh
+
   deno-check-no-new-errors:
     runs-on: ubuntu-latest
     steps:
@@ -135,7 +177,8 @@ jobs:
                    supabase/functions/agent-run/index.ts \
                    supabase/functions/agent-run-reaper/index.ts \
                    supabase/functions/worker-task-start/index.ts \
-                   supabase/functions/knowledge-audit/index.ts; do
+                   supabase/functions/knowledge-audit/index.ts \
+                   supabase/functions/file-register/index.ts; do
             echo "=== deno check $f ==="
             deno check --no-lock --node-modules-dir=none "$f" || true
           done

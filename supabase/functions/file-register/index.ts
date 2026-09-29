@@ -70,8 +70,29 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (!membership) return jsonError("您沒有這個房間的權限", 403, "forbidden", headers);
 
+    // D 階段項目 11 修正（檔案登記核對）：到這裡為止的所有檢查（10MB 上限、MIME 類型、
+    // 房間權限）都只驗證了「使用者這次請求宣稱的中繼資料」，從來沒有跟 Storage 裡
+    // 真正上傳的物件核對過——bucket 本身在這次修正前也完全沒有設定任何限制
+    // （見 migrations/0027_file_storage_lifecycle.sql），前端可以直接呼叫 Storage API
+    // 上傳任意大小、任意類型的檔案，這裡只是照抄一份使用者自己填的數字寫進 files 表。
+    // 用 Storage 自己記錄的物件中繼資料（真正收到的位元組數、上傳當下的 Content-Type）
+    // 取代使用者宣稱的值，同一個 10MB／白名單檢查用真實資料再核對一次；物件根本不存在
+    // （例如前端上傳失敗卻還是呼叫了這支函式、或 objectPath 打錯）也要直接拒絕，不能
+    // 登記一筆「查無實體」的檔案紀錄。
+    const verified = await verifyUploadedObject(admin, "room-files", objectPath);
+    if (!verified) {
+      return jsonError("找不到剛剛上傳的檔案，請重新上傳一次", 400, "object_not_found", headers);
+    }
+    if (verified.size > MAX_SIZE_BYTES) {
+      return jsonError("檔案超過 10MB 上限", 400, "file_too_large", headers);
+    }
+    if (!ALLOWED_MIME_TYPES.has(verified.mimeType)) {
+      return jsonError("不支援的檔案類型", 400, "unsupported_mime_type", headers);
+    }
+
     // 用 admin（service_role）client 寫入，沒有 auth.uid() context，owner_id（記事本/待辦/
     // 檔案夾真正的歸屬，brainstorms/2026-09-23-gpt-audit-followups.md Q1）要自己明確帶。
+    // mime_type／size_bytes 一律用上面核對過的真實值，不是請求 body 裡使用者自己填的值。
     const { data: file, error: insertErr } = await admin
       .from("files")
       .insert({
@@ -80,8 +101,8 @@ Deno.serve(async (req) => {
         bucket: "room-files",
         object_path: objectPath,
         name,
-        mime_type: mimeType,
-        size_bytes: sizeBytes,
+        mime_type: verified.mimeType,
+        size_bytes: verified.size,
         created_by: user.id,
       })
       .select("id")
@@ -92,8 +113,8 @@ Deno.serve(async (req) => {
       return jsonError("登記檔案失敗，請稍後重試", 500, "internal_error", headers);
     }
 
-    if (TEXT_EXTRACTABLE_MIME_TYPES.has(mimeType)) {
-      await extractTextChunks(admin, file.id, roomId, objectPath, mimeType);
+    if (TEXT_EXTRACTABLE_MIME_TYPES.has(verified.mimeType)) {
+      await extractTextChunks(admin, file.id, roomId, objectPath, verified.mimeType);
     }
 
     return new Response(JSON.stringify({ fileId: file.id }), { headers });
@@ -102,6 +123,43 @@ Deno.serve(async (req) => {
     return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
   }
 });
+
+interface VerifiedObject {
+  size: number;
+  mimeType: string;
+}
+
+// D 階段項目 11 修正：用 Storage 的 list() API 讀出物件在上傳當下真正被記錄的中繼資料
+// （size／mimetype，Storage 服務自己從實際收到的位元組數與上傳請求的 Content-Type
+// 記下來的，不是我們自己維護的資料），核對這支函式收到的請求宣不宣稱都不重要，這是
+// 唯一可信的來源。用 list() 而不是 download()：只需要中繼資料就能核對完 10MB／MIME
+// 類型限制，不需要真的把檔案內容整個下載下來，省流量也省時間。
+async function verifyUploadedObject(
+  admin: ReturnType<typeof supabaseAdmin>,
+  bucket: string,
+  objectPath: string,
+): Promise<VerifiedObject | null> {
+  const lastSlash = objectPath.lastIndexOf("/");
+  const dirPath = lastSlash === -1 ? "" : objectPath.slice(0, lastSlash);
+  const fileName = lastSlash === -1 ? objectPath : objectPath.slice(lastSlash + 1);
+
+  const { data: entries, error } = await admin.storage.from(bucket).list(dirPath, {
+    search: fileName,
+    limit: 1,
+  });
+  if (error) {
+    console.error("讀取 Storage 物件中繼資料失敗", bucket, objectPath, error);
+    return null;
+  }
+  const entry = entries?.find((e) => e.name === fileName);
+  if (!entry || !entry.metadata) return null;
+
+  const size = Number(entry.metadata.size);
+  const mimeType = String(entry.metadata.mimetype ?? "");
+  if (!Number.isFinite(size) || !mimeType) return null;
+
+  return { size, mimeType };
+}
 
 // DOCX 用 mammoth 擷取純文字（表格/樣式都不保留，只要文字內容）；XLSX 用 xlsx（SheetJS）
 // 把每個工作表轉成 CSV 文字後串接——都只需要「讓 AI 讀得到內容」，不需要保留原始格式。
