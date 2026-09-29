@@ -3,7 +3,7 @@
 // 代理能不能被點名，不是看房間層級的 agents.status，是看「目前登入的這個使用者」自己
 // 有沒有設定該供應商的 API key（brainstorms/2026-09-22-user-api-key-settings.md Q5）。
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import type { AgentRow } from "../../types/database";
@@ -15,6 +15,11 @@ export function MessageComposer({ roomId, agents }: { roomId: string; agents: Ag
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const sendMessage = useSendMessage(roomId);
   const { data: keyStatuses } = useApiKeyStatus();
+  // 項目 9 修正：同一個 clientId 要在「同一次送出嘗試」的所有重試之間保持不變，
+  // 送出失敗時（見下面 catch）故意不重新產生，讓使用者直接按同一顆按鈕重試會沿用
+  // 同一個冪等鍵，而不是每次都產生新的 clientId、變成又送出一則重複訊息；只有送出
+  // 成功之後才換下一個。
+  const clientIdRef = useRef(crypto.randomUUID());
 
   const configuredProviders = useMemo(
     () => new Set((keyStatuses ?? []).map((s) => s.provider)),
@@ -37,9 +42,14 @@ export function MessageComposer({ roomId, agents }: { roomId: string; agents: Ag
     if (!trimmed || sendMessage.isPending) return;
 
     try {
-      await sendMessage.mutateAsync({ content: trimmed, mentionAgentIds: selectedAgentIds });
+      await sendMessage.mutateAsync({
+        content: trimmed,
+        mentionAgentIds: selectedAgentIds,
+        clientId: clientIdRef.current,
+      });
       setContent("");
       setSelectedAgentIds([]);
+      clientIdRef.current = crypto.randomUUID();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "傳送失敗，請稍後重試");
     }

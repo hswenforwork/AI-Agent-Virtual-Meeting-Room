@@ -1,0 +1,58 @@
+name: security-regression
+
+# Phase A（17 項修正計劃）項目 17：CI 回歸閘門，起點先覆蓋項目 1／2／3／8
+# （跨帳號權限：自行入會、approval-decide 缺 owner 驗證、跨房間點名、核准原子化與過期）。
+# 用 postgrest／deno 的 standalone 執行檔直接對真實 PostgreSQL 跑，不需要 Docker，
+# 套用的是 supabase/migrations/ 底下實際的 migration 檔案，不是簡化過的 fixture。
+# 對應：docs/Phase-A-跨帳號權限修正-測試報告.md
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  security-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: 下載 postgrest（standalone 執行檔，不需要 Docker）
+        run: |
+          curl -sSL -o /tmp/postgrest.tar.xz \
+            https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+          mkdir -p /tmp/postgrest_bin
+          tar -xJf /tmp/postgrest.tar.xz -C /tmp/postgrest_bin
+          chmod +x /tmp/postgrest_bin/postgrest
+
+      - name: 執行 Phase A 跨帳號權限回歸測試
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: phase_a_ci
+          POSTGREST_BIN: /tmp/postgrest_bin/postgrest
+          DENO_BIN: deno
+        run: bash scripts/phase-a-regression-test.sh

@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { NotebookPen, ListTodo, Folder, ScrollText } from "lucide-react";
+import { NotebookPen, ListTodo, Folder, ScrollText, BrainCircuit } from "lucide-react";
 import { NotesPanel } from "../../features/notes/NotesPanel";
 import { TasksPanel } from "../../features/tasks/TasksPanel";
 import { FilesPanel } from "../../features/files/FilesPanel";
 import { SummaryPanel } from "../../features/summary/SummaryPanel";
+import { KnowledgePanel } from "../../features/knowledge/KnowledgePanel";
 
-type Tab = "notes" | "tasks" | "files" | "summary";
+type Tab = "notes" | "tasks" | "files" | "summary" | "knowledge";
 
 const TABS: { key: Tab; label: string; icon: typeof NotebookPen }[] = [
   { key: "notes", label: "記事本", icon: NotebookPen },
   { key: "tasks", label: "待辦事項", icon: ListTodo },
   { key: "files", label: "檔案夾", icon: Folder },
   { key: "summary", label: "對話摘要", icon: ScrollText },
+  { key: "knowledge", label: "共享知識", icon: BrainCircuit },
 ];
 
 export function WorkspaceTabs({
@@ -71,6 +73,7 @@ export function WorkspaceTabs({
         {tab === "tasks" && <TasksPanel roomId={roomId} />}
         {tab === "files" && <FilesPanel roomId={roomId} />}
         {tab === "summary" && <SummaryPanel roomId={roomId} />}
+        {tab === "knowledge" && <KnowledgePanel roomId={roomId} />}
       </div>
     </div>
   );
