@@ -19,19 +19,60 @@
 -- exists 恆為 false，會把「房間成員應該看得到別人上傳的檔案」這個既有行為整個弄壞
 -- （已經在本機測試中實際重現這個問題，不是理論推測）。
 -- 用 SECURITY DEFINER 函式（跟 is_room_member() 同一種手法）繞過這個問題：函式以
--- 建立 migration 的角色（擁有這些表、不受 files 自己的 RLS 限制）執行，回傳的是
--- 「這個物件路徑對應的 files 列，不論是誰的」，呼叫端再自己判斷 owner_id／status。
-create or replace function public.room_file_status_for_object(p_object_path text)
-returns table (owner_id uuid, status text)
+-- 建立 migration 的角色（擁有這些表、不受 files 自己的 RLS 限制）執行。
+--
+-- PR #49 審閱意見：第一版這裡用一個回傳 (owner_id, status) 的函式，讓兩條 policy
+-- 各自判斷。問題是這個函式本身是 PostgREST 會自動掛出來的 RPC 端點
+-- （/rpc/room_file_status_for_object），任何登入使用者都能直接呼叫、帶任意猜到的
+-- object_path，取得「這個路徑是誰的、還在不在」——等於繞過 files_select_own RLS，
+-- 直接把 owner_id 這種跨使用者資訊透過 RPC 洩漏出去，跟這個函式原本只是給 policy
+-- 內部用的意圖完全不符。而且 authenticated／anon 一定要有 EXECUTE 權限這個函式才能
+-- 正常評估 policy（拿掉權限會讓一般查詢直接噴權限錯誤），沒有辦法只允許「透過 policy
+-- 呼叫」而擋掉「直接當 RPC 呼叫」，Postgres 的權限模型沒有這種區分。
+--
+-- 修正：拆成兩個只回傳 boolean、且不接受任意外部 uid 參數的函式，把「能問到什麼」
+-- 限縮到最小：
+--   - room_file_is_active_owned_by_caller()：只回答「這個路徑是不是 active 而且
+--     owner_id 剛好是呼叫者自己（auth.uid()，函式內部讀，不是外部傳入的參數）」，
+--     直接當 RPC 呼叫也只能問到自己的檔案狀態，問不到別人的。
+--   - room_file_is_active()：只回答「這個路徑目前是不是還有一筆 active 的 files
+--     列，不管是誰的」，回傳純 boolean、不含 owner_id。直接當 RPC 呼叫時仍然是一個
+--     極小的存在性 oracle（可以問「這個路徑有沒有效」），但比起洩漏 owner_id／status
+--     這種可以連結使用者身分的資訊，風險小得多；而且 object_path 本身包在
+--     buildObjectPath()（前端 useFiles.ts）產生的路徑裡帶一段 crypto.randomUUID()，
+--     不是可枚舉、可猜測的字串，實務上需要先以其他方式拿到這個路徑才問得出東西，
+--     這裡誠實記錄這個殘留風險，不是宣稱完全沒有。
+create or replace function public.room_file_is_active_owned_by_caller(p_object_path text)
+returns boolean
 language sql
 security definer set search_path = public
 stable
 as $$
-  select f.owner_id, f.status
-  from public.files f
-  where f.bucket = 'room-files' and f.object_path = p_object_path
-  limit 1
+  select exists (
+    select 1 from public.files f
+    where f.bucket = 'room-files' and f.object_path = p_object_path
+      and f.owner_id = auth.uid() and f.status = 'active'
+  )
 $$;
+
+create or replace function public.room_file_is_active(p_object_path text)
+returns boolean
+language sql
+security definer set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.files f
+    where f.bucket = 'room-files' and f.object_path = p_object_path and f.status = 'active'
+  )
+$$;
+
+-- 明確限縮執行權限：只給 authenticated／anon（storage.objects 的 RLS policy 評估
+-- 時的查詢角色需要，拿掉會讓一般查詢直接噴權限錯誤），不額外授權給其他角色。
+revoke all on function public.room_file_is_active_owned_by_caller(text) from public;
+grant execute on function public.room_file_is_active_owned_by_caller(text) to authenticated, anon;
+revoke all on function public.room_file_is_active(text) from public;
+grant execute on function public.room_file_is_active(text) to authenticated, anon;
 
 -- 新增一條「檔案擁有者」的 SELECT policy，跟既有的「房間成員」policy 並存
 -- （Postgres 對同一指令的多個 permissive policy 用 OR 合併，不用動到既有那條
@@ -41,10 +82,7 @@ $$;
 create policy "room_files_select_owner" on storage.objects
   for select using (
     bucket_id = 'room-files'
-    and exists (
-      select 1 from public.room_file_status_for_object(storage.objects.name) s
-      where s.owner_id = auth.uid() and s.status = 'active'
-    )
+    and public.room_file_is_active_owned_by_caller(storage.objects.name)
   );
 
 -- PR #48 審閱意見：只加一條新 policy 還不夠——既有的 room_files_select_member 從
@@ -67,11 +105,56 @@ create policy "room_files_select_member" on storage.objects
   for select using (
     bucket_id = 'room-files'
     and public.is_room_member((storage.foldername(name))[1]::uuid)
-    and exists (
-      select 1 from public.room_file_status_for_object(storage.objects.name) s
-      where s.status = 'active'
-    )
+    and public.room_file_is_active(storage.objects.name)
   );
+
+-- PR #49 審閱意見：file-register 原本只確認呼叫者是房間成員、Storage 物件真的存在，
+-- 就把呼叫者寫成 files.owner_id——完全沒有核對這個物件當初是「誰」上傳的
+-- （storage.objects.owner，Storage 在上傳當下依 room_files_insert_member policy 的
+-- with check owner = auth.uid() 設定，之後沒有任何前端／後端流程會去改它）。同一個
+-- 房間的另一個成員 A，只要知道／猜到房間成員 B 已經上傳的 object_path，就能呼叫
+-- file-register 幫同一個物件登記一筆 owner_id=A 的 files 列，實質上把 B 的檔案
+-- 「據為己有」——之後 A 甚至可以透過 file.delete 核准流程把 B 上傳的實體物件刪掉，
+-- B 完全不知情也沒有核准過。
+--
+-- 這裡新增一個只給 service_role 呼叫的函式，讀出 storage.objects.owner，讓
+-- file-register（本來就是用 service_role 的 admin client 在跑）可以核對「呼叫者
+-- 是不是真正的上傳者」。只授權給 service_role：owner 欄位本身雖然只是一個 uuid，
+-- 但跨使用者揭露「誰上傳了這個路徑」一樣不該讓一般使用者能直接當 RPC 問到，所以
+-- 不比照上面兩個函式授權給 authenticated／anon。
+--
+-- 本機測試時實際發現（真的用 authenticated／anon 的 JWT 直接呼叫這支函式驗證過，
+-- 不是理論推測）：Supabase 專案（以及這裡的測試基礎設施）對 public schema 都設有
+-- `alter default privileges ... grant execute on functions to authenticated, anon,
+-- service_role`，讓新建立的函式預設就對 authenticated／anon 開放執行權限（這也是
+-- is_room_member() 等既有函式不用額外下 grant 就能被 policy／PostgREST 呼叫的
+-- 原因）。這代表單純下 `revoke all ... from public` 完全沒用——那只會撤銷
+-- PUBLIC 這個虛擬角色本身的權限，撤不掉已經透過 default privileges 直接授與
+-- authenticated／anon 這兩個實際角色的權限，這支函式建立後 authenticated／anon
+-- 其實還是能直接呼叫成功。必須明確把 authenticated／anon 兩個角色本身也一起
+-- revoke 掉，才會真的被 Postgres 權限系統擋下來。
+create or replace function public.room_files_storage_object_owner(p_bucket text, p_object_path text)
+returns uuid
+language sql
+security definer set search_path = public
+stable
+as $$
+  select owner from storage.objects where bucket_id = p_bucket and name = p_object_path limit 1
+$$;
+
+revoke all on function public.room_files_storage_object_owner(text, text) from public, authenticated, anon;
+grant execute on function public.room_files_storage_object_owner(text, text) to service_role;
+
+-- PR #49 審閱意見：files 表對 (bucket, object_path) 沒有唯一約束——如果上面的
+-- 上傳者核對萬一被繞過（例如未來有其他呼叫路徑忘記做這個檢查），或單純同一個物件被
+-- 登記兩次，會出現兩筆 files 列指向同一個實體物件、owner_id 卻不同的情況。這種情況下
+-- 上面 room_file_is_active_owned_by_caller()／room_file_is_active() 兩個函式的
+-- `limit 1` 會選到哪一筆完全沒有保證順序（不依賴任何 ORDER BY），代表「刪房後誰還能
+-- 下載」這種存取控制判斷會變成不確定、可能因為查詢計畫或資料寫入順序而改變。加一個
+-- 唯一約束，讓資料庫本身直接擋下「同一個 object_path 被登記兩次」，不只靠應用層的
+-- 上傳者核對這一道防線。
+alter table public.files
+  add constraint files_bucket_object_path_key unique (bucket, object_path);
 
 -- 項目 11：檔案登記核對——file-register Edge Function 原本的 10MB／MIME 類型限制只
 -- 驗證請求 body 裡使用者「自己宣稱」的 sizeBytes／mimeType，從來沒有跟 Storage 裡真正

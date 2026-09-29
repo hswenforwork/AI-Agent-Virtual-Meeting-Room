@@ -366,7 +366,7 @@ FR_PID=$(cat "$WORKDIR/file_register.pid")
 
 ROOM_D2="10000000-0000-0000-0000-0000000000d2"
 $PSQL -c "insert into rooms (id, owner_id, name, title_generated) values ('$ROOM_D2','$UID_OWNER','D room 2', true);"
-$PSQL -c "insert into room_members (room_id, user_id, role) values ('$ROOM_D2','$UID_OWNER','owner') on conflict (room_id, user_id) do nothing;"
+$PSQL -c "insert into room_members (room_id, user_id, role) values ('$ROOM_D2','$UID_OWNER','owner'), ('$ROOM_D2','$UID_OTHER','member') on conflict (room_id, user_id) do nothing;"
 
 RESP_MISSING=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_OWNER" -H "Content-Type: application/json" -d "{\"roomId\":\"$ROOM_D2\",\"objectPath\":\"$ROOM_D2/2026/09/ghost.png\",\"name\":\"ghost.png\",\"mimeType\":\"image/png\",\"sizeBytes\":1000}")
 CODE_MISSING=$(echo "$RESP_MISSING" | tail -1)
@@ -377,6 +377,10 @@ GHOST_COUNT=$($PSQL -tAc "select count(*) from files where object_path='$ROOM_D2
 
 echo ""
 echo "=== [項目 11] file-register：使用者宣稱的中繼資料跟 Storage 真正記錄的不一致時，以 Storage 真正記錄的為準 ==="
+echo "  （PR #49 補強：這裡額外插入一筆 storage.objects，owner=呼叫者本人——上傳者驗證"
+echo "  這一步現在會真的查 storage.objects.owner，這個測項本來就假設呼叫者是真正的"
+echo "  上傳者，只是宣稱的中繼資料造假，不是在測上傳者核對本身）"
+$PSQL -c "insert into storage.objects (bucket_id, name, owner) values ('room-files','$ROOM_D2/2026/09/real.png','$UID_OWNER');"
 cat > "$STORAGE_LIST_RESPONSE_FILE" <<JSON
 [{"name":"real.png","id":"$(node -e 'console.log(require("crypto").randomUUID())')","updated_at":"2026-01-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z","last_accessed_at":"2026-01-01T00:00:00Z","metadata":{"size":2048,"mimetype":"image/png"}}]
 JSON
@@ -400,8 +404,90 @@ echo "  使用者宣稱 sizeBytes=1000，Storage 真正記錄 size=99999999，�
 HUGE_COUNT=$($PSQL -tAc "select count(*) from files where object_path='$ROOM_D2/2026/09/huge.png';")
 [ "$HUGE_COUNT" = "0" ] && pass "超過上限的物件沒有被登記進 files 表" || fail "files 表裡竟然有 $HUGE_COUNT 筆超過上限的紀錄"
 
+echo ""
+echo "=== [PR #49 審閱意見] file-register：同房間成員 A 不得把 B 已上傳的物件登記為自己的 ==="
+echo "  （UID_OWNER=A，UID_OTHER=B，兩人都是 ROOM_D2 成員；storage.objects.owner 真正記錄"
+echo "  的是 B——模擬 A 知道／猜到 B 已上傳的 object_path，呼叫 file-register 想登記成自己"
+echo "  的檔案）"
+STOLEN_PATH="$ROOM_D2/2026/09/stolen.png"
+$PSQL -c "insert into storage.objects (bucket_id, name, owner) values ('room-files','$STOLEN_PATH','$UID_OTHER');"
+cat > "$STORAGE_LIST_RESPONSE_FILE" <<JSON
+[{"name":"stolen.png","id":"$(node -e 'console.log(require("crypto").randomUUID())')","updated_at":"2026-01-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z","last_accessed_at":"2026-01-01T00:00:00Z","metadata":{"size":1500,"mimetype":"image/png"}}]
+JSON
+RESP_STEAL=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_OWNER" -H "Content-Type: application/json" -d "{\"roomId\":\"$ROOM_D2\",\"objectPath\":\"$STOLEN_PATH\",\"name\":\"stolen.png\",\"mimeType\":\"image/png\",\"sizeBytes\":1500}")
+CODE_STEAL=$(echo "$RESP_STEAL" | tail -1)
+echo "  A（房間成員，不是上傳者）嘗試登記 B 的物件，回應（HTTP $CODE_STEAL）：$(echo "$RESP_STEAL" | head -n -1)"
+[ "$CODE_STEAL" = "403" ] && pass "【修正生效】A 不是真正的上傳者，file-register 拒絕登記（HTTP 403 not_uploader）——修正前這裡會是 200，B 的檔案會被 A 偷走" || fail "應該回 403 not_uploader，實際是 HTTP $CODE_STEAL"
+STOLEN_COUNT=$($PSQL -tAc "select count(*) from files where object_path='$STOLEN_PATH';")
+[ "$STOLEN_COUNT" = "0" ] && pass "沒有留下任何 owner_id=A 的冒名檔案紀錄" || fail "files 表裡竟然有 $STOLEN_COUNT 筆冒名登記的紀錄"
+
+echo ""
+echo "=== [PR #49 審閱意見] file-register：真正的上傳者 B 自己登記同一個物件要能成功 ==="
+RESP_TRUE_OWNER=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_OTHER" -H "Content-Type: application/json" -d "{\"roomId\":\"$ROOM_D2\",\"objectPath\":\"$STOLEN_PATH\",\"name\":\"stolen.png\",\"mimeType\":\"image/png\",\"sizeBytes\":1500}")
+CODE_TRUE_OWNER=$(echo "$RESP_TRUE_OWNER" | tail -1)
+BODY_TRUE_OWNER=$(echo "$RESP_TRUE_OWNER" | head -n -1)
+echo "  B（真正的上傳者）登記自己的物件，回應（HTTP $CODE_TRUE_OWNER）：$BODY_TRUE_OWNER"
+[ "$CODE_TRUE_OWNER" = "200" ] && pass "真正的上傳者可以正常登記成功（HTTP 200）——修正沒有誤傷正常流程" || fail "應該回 200，實際是 HTTP $CODE_TRUE_OWNER"
+TRUE_OWNER_ID=$($PSQL -tAc "select owner_id from files where object_path='$STOLEN_PATH';")
+[ "$TRUE_OWNER_ID" = "$UID_OTHER" ] && pass "files 表裡這筆紀錄的 owner_id 正確是真正的上傳者 B" || fail "files 表的 owner_id 是 $TRUE_OWNER_ID（應該是 $UID_OTHER）"
+STOLEN_FILE_ID=$(echo "$BODY_TRUE_OWNER" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(d).fileId)}catch{console.log("")}})')
+
+echo ""
+echo "=== [PR #49 審閱意見] file-register：同一個真正的上傳者重複呼叫（例如網路逾時重試）要冪等成功，不能留下重複列 ==="
+echo "  （files(bucket, object_path) 現在有唯一約束，見 migrations/0027；insert 會打到"
+echo "  23505 unique_violation，file-register 要能辨識『這是自己重試』而不是直接 500）"
+RESP_RETRY=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_OTHER" -H "Content-Type: application/json" -d "{\"roomId\":\"$ROOM_D2\",\"objectPath\":\"$STOLEN_PATH\",\"name\":\"stolen.png\",\"mimeType\":\"image/png\",\"sizeBytes\":1500}")
+CODE_RETRY=$(echo "$RESP_RETRY" | tail -1)
+BODY_RETRY=$(echo "$RESP_RETRY" | head -n -1)
+echo "  B 對同一個 object_path 重複呼叫，回應（HTTP $CODE_RETRY）：$BODY_RETRY"
+[ "$CODE_RETRY" = "200" ] && pass "同一個上傳者重試時冪等成功（HTTP 200），不是噴 500" || fail "應該回 200（冪等成功），實際是 HTTP $CODE_RETRY"
+RETRY_FILE_ID=$(echo "$BODY_RETRY" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(d).fileId)}catch{console.log("")}})')
+[ "$RETRY_FILE_ID" = "$STOLEN_FILE_ID" ] && pass "重試回傳的 fileId 跟第一次登記的相同，是同一筆紀錄，不是新建的重複列" || fail "重試回傳的 fileId（$RETRY_FILE_ID）跟第一次（$STOLEN_FILE_ID）不一致"
+DUPLICATE_ROW_COUNT=$($PSQL -tAc "select count(*) from files where object_path='$STOLEN_PATH';")
+[ "$DUPLICATE_ROW_COUNT" = "1" ] && pass "files 表裡這個 object_path 仍然只有 1 筆紀錄（唯一約束生效，沒有留下重複列）" || fail "files 表裡這個 object_path 有 $DUPLICATE_ROW_COUNT 筆（應該是 1）"
+
+echo ""
+echo "=== [PR #49 審閱意見] files(bucket, object_path) 資料庫層確實有唯一約束（不只靠應用層擋）==="
+CONSTRAINT_EXISTS=$($PSQL -tAc "select count(*) from pg_constraint where conname = 'files_bucket_object_path_key';")
+[ "$CONSTRAINT_EXISTS" = "1" ] && pass "資料庫層確實存在 files_bucket_object_path_key 唯一約束" || fail "找不到 files_bucket_object_path_key 唯一約束（應用層即使有漏洞，資料庫也擋不住重複登記）"
+
 kill "$FR_PID" 2>/dev/null || true
 sleep 1
+
+echo ""
+echo "=== [PR #49 審閱意見] SECURITY DEFINER 函式的 RPC 暴露範圍：直接以 authenticated／anon 身分呼叫，不能讀到別人的 owner_id／status ==="
+echo "  （room_file_is_active_owned_by_caller／room_file_is_active 兩個函式因為要給"
+echo "  storage.objects 的 RLS policy 評估使用，authenticated／anon 一定要有 EXECUTE"
+echo "  權限；PostgREST 會把它們自動掛成 /rpc/ 端點，這裡直接驗證『被當一般 RPC 呼叫』"
+echo "  時，回傳的資訊範圍是不是真的已經縮小到不會洩漏跨使用者資訊）"
+RPC_ACTIVE_AS_OTHER=$(curl -s -X POST "http://localhost:3611/rpc/room_file_is_active_owned_by_caller" -H "Authorization: Bearer $JWT_OTHER" -H "Content-Type: application/json" -d "{\"p_object_path\":\"$OBJECT_PATH\"}")
+echo "  B（不是 $OBJECT_PATH 的擁有者）直接呼叫 room_file_is_active_owned_by_caller：$RPC_ACTIVE_AS_OTHER"
+[ "$RPC_ACTIVE_AS_OTHER" = "false" ] && pass "非擁有者直接呼叫只會拿到 false，問不到『這個路徑其實是誰的、還在不在』" || fail "回傳 $RPC_ACTIVE_AS_OTHER（應該是 false）"
+
+RPC_ACTIVE_AS_OWNER=$(curl -s -X POST "http://localhost:3611/rpc/room_file_is_active_owned_by_caller" -H "Authorization: Bearer $JWT_OWNER" -H "Content-Type: application/json" -d "{\"p_object_path\":\"$OBJECT_PATH\"}")
+echo "  A（真正的擁有者）直接呼叫 room_file_is_active_owned_by_caller：$RPC_ACTIVE_AS_OWNER"
+[ "$RPC_ACTIVE_AS_OWNER" = "true" ] && pass "擁有者直接呼叫可以問到自己檔案的狀態（true），符合函式設計意圖——只能問自己的" || fail "回傳 $RPC_ACTIVE_AS_OWNER（應該是 true）"
+
+echo ""
+echo "=== [PR #49 審閱意見] room_files_storage_object_owner()（讀出真正上傳者）不能被一般使用者當 RPC 直接呼叫 ==="
+echo "  （這個函式只給 service_role 用，authenticated／anon 呼叫應該直接被 Postgres 權限"
+echo "  系統擋下來，不是『函式內部判斷後回傳空值』——這樣才能防止一般使用者用這支函式"
+echo "  探測任意路徑背後的真正上傳者身分）"
+RPC_OWNER_AS_AUTH=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:3611/rpc/room_files_storage_object_owner" -H "Authorization: Bearer $JWT_OWNER" -H "Content-Type: application/json" -d "{\"p_bucket\":\"room-files\",\"p_object_path\":\"$OBJECT_PATH\"}")
+CODE_RPC_OWNER_AUTH=$(echo "$RPC_OWNER_AS_AUTH" | tail -1)
+echo "  authenticated 使用者直接呼叫，回應（HTTP $CODE_RPC_OWNER_AUTH）：$(echo "$RPC_OWNER_AS_AUTH" | head -n -1)"
+[ "$CODE_RPC_OWNER_AUTH" != "200" ] && pass "authenticated 角色呼叫被 Postgres 權限系統拒絕（HTTP $CODE_RPC_OWNER_AUTH，不是 200）" || fail "authenticated 角色竟然可以直接呼叫成功（HTTP 200），洩漏了跨使用者的上傳者身分"
+
+RPC_OWNER_AS_ANON=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:3611/rpc/room_files_storage_object_owner" -H "Authorization: Bearer $JWT_ANON" -H "Content-Type: application/json" -d "{\"p_bucket\":\"room-files\",\"p_object_path\":\"$OBJECT_PATH\"}")
+CODE_RPC_OWNER_ANON=$(echo "$RPC_OWNER_AS_ANON" | tail -1)
+echo "  anon 使用者直接呼叫，回應（HTTP $CODE_RPC_OWNER_ANON）：$(echo "$RPC_OWNER_AS_ANON" | head -n -1)"
+[ "$CODE_RPC_OWNER_ANON" != "200" ] && pass "anon 角色呼叫也被拒絕（HTTP $CODE_RPC_OWNER_ANON，不是 200）" || fail "anon 角色竟然可以直接呼叫成功（HTTP 200）"
+
+RPC_OWNER_AS_SERVICE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:3611/rpc/room_files_storage_object_owner" -H "Authorization: Bearer $JWT_SERVICE" -H "Content-Type: application/json" -d "{\"p_bucket\":\"room-files\",\"p_object_path\":\"$OBJECT_PATH\"}")
+CODE_RPC_OWNER_SERVICE=$(echo "$RPC_OWNER_AS_SERVICE" | tail -1)
+BODY_RPC_OWNER_SERVICE=$(echo "$RPC_OWNER_AS_SERVICE" | head -n -1)
+echo "  service_role（file-register 實際使用的身分）直接呼叫，回應（HTTP $CODE_RPC_OWNER_SERVICE）：$BODY_RPC_OWNER_SERVICE"
+[ "$CODE_RPC_OWNER_SERVICE" = "200" ] && [ "$BODY_RPC_OWNER_SERVICE" = "\"$UID_OWNER\"" ] && pass "service_role 呼叫成功，且正確讀出真正的上傳者 $UID_OWNER——函式本身邏輯正確，只是權限收得夠窄" || fail "service_role 呼叫結果不如預期（HTTP $CODE_RPC_OWNER_SERVICE，body：$BODY_RPC_OWNER_SERVICE）"
 
 echo ""
 echo "=== [項目 15] approval-decide 的 file.delete：DB 軟刪除成功後，真的會呼叫 Storage remove() ==="

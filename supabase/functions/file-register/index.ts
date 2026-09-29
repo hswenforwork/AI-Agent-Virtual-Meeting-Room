@@ -90,6 +90,22 @@ Deno.serve(async (req) => {
       return jsonError("不支援的檔案類型", 400, "unsupported_mime_type", headers);
     }
 
+    // PR #49 審閱意見（項目 11 補強）：到這裡只驗證了「房間成員」跟「物件真的存在」，
+    // 完全沒確認呼叫者是不是這個物件真正的上傳者——同一個房間的成員 A 可以拿房間成員
+    // B 已經上傳的 object_path 呼叫這支函式，把 B 的檔案登記成「A 的檔案」。
+    // storage.objects.owner 是 Storage 在上傳當下依 room_files_insert_member policy
+    // 的 with check owner = auth.uid() 設定的，之後沒有任何流程會改它，是唯一可信的
+    // 「這個物件真正是誰上傳的」依據。用 service_role-only 的
+    // room_files_storage_object_owner() 讀出來核對，不等於呼叫者就直接拒絕，不能讓
+    // 別人的上傳被冒名登記。
+    const uploaderId = await getStorageObjectOwner(admin, "room-files", objectPath);
+    if (!uploaderId) {
+      return jsonError("找不到這個物件的上傳者紀錄，請重新上傳一次", 400, "object_owner_unknown", headers);
+    }
+    if (uploaderId !== user.id) {
+      return jsonError("這個檔案不是由你上傳的，無法登記為你的檔案", 403, "not_uploader", headers);
+    }
+
     // 用 admin（service_role）client 寫入，沒有 auth.uid() context，owner_id（記事本/待辦/
     // 檔案夾真正的歸屬，brainstorms/2026-09-23-gpt-audit-followups.md Q1）要自己明確帶。
     // mime_type／size_bytes 一律用上面核對過的真實值，不是請求 body 裡使用者自己填的值。
@@ -108,8 +124,32 @@ Deno.serve(async (req) => {
       .select("id")
       .single();
 
-    if (insertErr || !file) {
+    if (insertErr) {
+      // PR #49 審閱意見：files(bucket, object_path) 現在有唯一約束（見
+      // migrations/0027_file_storage_lifecycle.sql）——同一個路徑被登記第二次時，
+      // Postgres 回傳 23505 unique_violation。上面的上傳者核對已經先擋掉「別人的
+      // 物件」，這裡剩下的合理情境只有「同一個上傳者自己重試」（例如網路逾時、前端
+      // 重複點擊），查出既有那一筆、owner_id 確實是自己就直接回傳既有 id 當冪等
+      // 成功；owner_id 不是自己（理論上不該發生，上傳者核對已經擋過一次，這裡是
+      // 第二層防禦）就明確回報衝突，不能讓其中一筆變成看不見的殭屍資料。
+      if (insertErr.code === "23505") {
+        const { data: existing } = await admin
+          .from("files")
+          .select("id, owner_id")
+          .eq("bucket", "room-files")
+          .eq("object_path", objectPath)
+          .maybeSingle();
+        if (existing && existing.owner_id === user.id) {
+          return new Response(JSON.stringify({ fileId: existing.id }), { headers });
+        }
+        console.error("檔案路徑重複登記，且擁有者不是這次呼叫者", objectPath, existing);
+        return jsonError("這個檔案路徑已經被登記過", 409, "already_registered", headers);
+      }
       console.error("登記檔案失敗", insertErr);
+      return jsonError("登記檔案失敗，請稍後重試", 500, "internal_error", headers);
+    }
+    if (!file) {
+      console.error("登記檔案失敗：insert 沒有回傳任何錯誤，但也沒有資料");
       return jsonError("登記檔案失敗，請稍後重試", 500, "internal_error", headers);
     }
 
@@ -159,6 +199,30 @@ async function verifyUploadedObject(
   if (!Number.isFinite(size) || !mimeType) return null;
 
   return { size, mimeType };
+}
+
+// PR #49 審閱意見（項目 11 補強）：呼叫 migrations/0027_file_storage_lifecycle.sql
+// 新增的 service_role-only RPC，讀出這個物件當初上傳時 Storage 記下的真正 owner
+// （storage.objects.owner）。刻意不用一般查詢（例如直接 select storage.objects），
+// 因為 admin client 雖然是 service_role、本來就能繞過 RLS 直接查，但這裡改用專用
+// 函式是為了讓「誰能讀到物件上傳者」這件事的權限邊界集中定義在資料庫層（跟
+// verifyUploadedObject() 用 Storage API 而不是直查 storage.objects 是同樣的分層
+// 考量）。RPC 呼叫失敗（含查無此物件）一律回傳 null，呼叫端會直接拒絕登記，不會
+// 誤判成「驗證通過」。
+async function getStorageObjectOwner(
+  admin: ReturnType<typeof supabaseAdmin>,
+  bucket: string,
+  objectPath: string,
+): Promise<string | null> {
+  const { data, error } = await admin.rpc("room_files_storage_object_owner", {
+    p_bucket: bucket,
+    p_object_path: objectPath,
+  });
+  if (error) {
+    console.error("查詢 Storage 物件上傳者失敗", bucket, objectPath, error);
+    return null;
+  }
+  return typeof data === "string" && data.length > 0 ? data : null;
 }
 
 // DOCX 用 mammoth 擷取純文字（表格/樣式都不保留，只要文字內容）；XLSX 用 xlsx（SheetJS）
