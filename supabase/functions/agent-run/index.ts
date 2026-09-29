@@ -270,7 +270,10 @@ Deno.serve(async (req) => {
     // 由代理自己判斷要不要拉另一位供應商的代理進來幫忙；使用者一個可拉的供應商都沒有
     // （沒設定其他家的 key）就完全不附帶工具。
     const loopInTool = run.is_loop_in ? null : await buildLoopInTool(admin, triggeringUserId!, providerSlug);
-    const pdfDocuments = ownerId ? await buildPdfDocuments(admin, ownerId) : [];
+    // 項目 12 修正（PDF 僅按需送出）：只有這次對話最近提到的檔名才會被當作「使用者
+    // 這次真的需要這份 PDF」而附加，見 buildPdfDocuments() 的說明。
+    const recentTextForPdfMatch = history.map((m) => m.content).join("\n");
+    const pdfDocuments = ownerId ? await buildPdfDocuments(admin, ownerId, recentTextForPdfMatch) : [];
 
     // 分類呼叫（classifyMessage）可能花了一段時間，這段期間使用者也可能已經按了停止，
     // 重新查一次最新的 cancel_requested，避免明明使用者已經取消、卻還是生出一則新的
