@@ -63,7 +63,7 @@ create or replace function auth.uid() returns uuid language sql stable as $f$
 $f$;
 
 create schema if not exists storage;
-create table storage.buckets (id text primary key, name text not null, public boolean not null default false);
+create table storage.buckets (id text primary key, name text not null, public boolean not null default false, file_size_limit bigint, allowed_mime_types text[]);
 create table storage.objects (
   id uuid primary key default gen_random_uuid(),
   bucket_id text references storage.buckets (id),
@@ -95,8 +95,8 @@ alter default privileges for role current_user in schema public grant all on seq
 alter default privileges for role current_user in schema public grant execute on functions to authenticated, anon, service_role;
 SQL
 
-echo "=== 依整合後的最終順序套用全部 migration（0001~0026） ==="
-for f in "$REPO_ROOT"/supabase/migrations/00{01..26}_*.sql; do
+echo "=== 依整合後的最終順序套用全部 migration（0001~0027） ==="
+for f in "$REPO_ROOT"/supabase/migrations/00{01..27}_*.sql; do
   base="$(basename "$f")"
   if [ "$base" = "0006_enable_realtime.sql" ]; then
     grep -v "alter publication supabase_realtime add table" "$f" | $PSQL

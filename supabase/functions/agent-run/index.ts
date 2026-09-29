@@ -317,7 +317,11 @@ Deno.serve(async (req) => {
     const loopInTool = run.is_loop_in ? null : await buildLoopInTool(admin, triggeringUserId!, providerSlug);
     const proposeKnowledgeTool =
       run.is_loop_in || !ownerId ? null : await buildProposeKnowledgeTool(admin, ownerId as string);
-    const pdfDocuments = ownerId ? await buildPdfDocuments(admin, ownerId) : [];
+    // 項目 12 修正（PR #48 審閱意見）：只依這次觸發這個 agent-run 的訊息本身
+    // （triggerMessage.content）比對，不是整段對話歷史（recentTextForKnowledge）——
+    // 用歷史比對的話，使用者只要曾經在任何一則歷史訊息提過某份 PDF 的檔名，之後每
+    // 一則完全無關的新訊息都會因為「歷史上出現過」而被重新附加，變成附加一次就回不去。
+    const pdfDocuments = ownerId ? await buildPdfDocuments(admin, ownerId, triggerMessage?.content ?? "") : [];
 
     // 分類呼叫（classifyMessage）可能花了一段時間，這段期間使用者也可能已經按了停止，
     // 重新查一次最新的 cancel_requested，避免明明使用者已經取消、卻還是生出一則新的
