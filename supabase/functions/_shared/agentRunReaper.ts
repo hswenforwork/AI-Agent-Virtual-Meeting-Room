@@ -24,12 +24,21 @@ export const STALE_QUEUED_AGENT_RUN_MS = Number(
 );
 
 export interface ReapResult {
+  // false 代表這次清掃的資料庫查詢本身失敗（不是「沒有孤兒紀錄可清掃」，那種情況
+  // ok 仍然是 true、reapedIds 是空陣列）。呼叫端（尤其是獨立的 agent-run-reaper
+  // 端點）要用這個欄位分辨「清掃過、確實沒有孤兒」跟「清掃失敗、這次完全沒清掃到」，
+  // 不能只看 reapedIds 是不是空的。
+  ok: boolean;
   reapedIds: string[];
 }
 
 // 把逾時仍是 queued 的 agent_runs 標成 failed（error_code=orphaned_before_dispatch）。
 // 用條件式 UPDATE（status='queued' 才會被改動）而不是先 SELECT 再 UPDATE，
-// 避免跟真的還在跑的 dispatchAgentRuns() 之間出現競態、蓋掉剛好同時完成的狀態。
+// 避免跟真的還在跑的 dispatchAgentRuns() 之間出現競態、蓋掉剛好同時完成的狀態；
+// 同一個條件也保證跟 agent-run/index.ts 的原子搶占（UPDATE ... WHERE status='queued'）
+// 互斥——這筆紀錄要嘛先被這裡標成 failed（之後 agent-run 的搶占會因為 status 不是
+// queued 而拿到空結果，不會把 failed 蓋回 running），要嘛先被 agent-run 搶去 running
+// （之後這裡的 UPDATE 也會因為 status 不是 queued 而不動它），兩者不會同時得逞。
 export async function reapStaleQueuedAgentRuns(
   admin: AdminClient,
   staleMs: number = STALE_QUEUED_AGENT_RUN_MS,
@@ -48,7 +57,7 @@ export async function reapStaleQueuedAgentRuns(
 
   if (error) {
     console.error("reapStaleQueuedAgentRuns 查詢失敗", error);
-    return { reapedIds: [] };
+    return { ok: false, reapedIds: [] };
   }
-  return { reapedIds: (data ?? []).map((row) => row.id as string) };
+  return { ok: true, reapedIds: (data ?? []).map((row) => row.id as string) };
 }

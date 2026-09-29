@@ -27,7 +27,21 @@ Deno.serve(async (req) => {
     }
 
     const admin = supabaseAdmin();
-    const { reapedIds } = await reapStaleQueuedAgentRuns(admin);
+    const { ok, reapedIds } = await reapStaleQueuedAgentRuns(admin);
+
+    // PR #47 審閱意見：原本不管 reapStaleQueuedAgentRuns() 內部查詢有沒有成功，這裡都
+    // 回傳 ok:true——排程呼叫端（pg_cron／net.http_post，或任何手動監控）完全看不出來
+    // 「這次真的清掃過、確實沒有孤兒」跟「這次資料庫查詢本身失敗、根本沒清掃到任何東西」
+    // 的差別。這支端點本來就是給沒有其他清掃管道（沒人發訊息）的房間準備的最後一道防線，
+    // 如果它自己出錯又假裝成功，會讓孤兒紀錄在使用者/排程監控都不知情的狀況下繼續卡著。
+    if (!ok) {
+      return jsonError(
+        "清掃孤兒 queued 紀錄時資料庫查詢失敗，這次沒有清掃到任何紀錄，請檢查後端日誌並重試",
+        500,
+        "reap_query_failed",
+        headers,
+      );
+    }
 
     return new Response(JSON.stringify({ ok: true, reapedCount: reapedIds.length, reapedIds }), { headers });
   } catch (err) {

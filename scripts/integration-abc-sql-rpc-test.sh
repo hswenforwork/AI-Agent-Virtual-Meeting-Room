@@ -328,6 +328,109 @@ IFS=',' read -r REQ INP OUT <<< "$ROW"
 [ "$REQ" = "20" ] && [ "$INP" = "200" ] && [ "$OUT" = "100" ] && pass "20 次併發呼叫加總完全正確：request_count=20, input=200, output=100" || fail "結果是 request_count=$REQ, input=$INP, output=$OUT（應該是 20/200/100）"
 
 echo ""
+echo "=== [項目 7 補強] agent-run 原子搶占：PR #47 第二輪審閱意見要求的併發邊界 ==="
+echo "  agent-run/index.ts 現在用單一條件式 UPDATE（WHERE id=\$1 AND status='queued'，"
+echo "  帶 RETURNING）當唯一的搶占點，只有真的把 status 從 queued 換成 running 的那次"
+echo "  呼叫才會往下執行付費的供應商呼叫。這裡直接測試這個 SQL 層的搶占原語本身（跟"
+echo "  項目 6／8 的 worker_tasks／approval_requests 原子搶占用同一種方法論——agent-run"
+echo "  真的呼叫供應商 API 的部分不在這裡測，見整合測試報告的測試限制說明），確認："
+echo "  (a) 兩個並發的 agent-run 呼叫同時搶同一筆 queued 紀錄，最多只有一個會搶到，"
+echo "  等同「最多一次付費執行」；(b) reaper 跟 agent-run 同時處理同一筆紀錄時兩者"
+echo "  互斥，不會同時得逞；(c) 已經被 reaper 標成 failed 的紀錄，之後才到的 agent-run"
+echo "  搶占嘗試必須拿到 0 筆，不能把 failed 蓋回 running。"
+
+echo ""
+echo "--- (a) 兩個並發的 agent-run 呼叫同時搶同一筆 queued 紀錄 ---"
+MSG_CLAIM_A="80000000-0000-0000-0000-0000000000e1"
+RUN_CLAIM_A="90000000-0000-0000-0000-0000000000e1"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content) values ('$MSG_CLAIM_A','$ROOM_A','user','$UID_A','claim race a');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status) values ('$RUN_CLAIM_A','$ROOM_A','$AGENT_A','$MSG_CLAIM_A','queued');"
+cat > /tmp/integration_abc_claim_a1.sql <<SQL
+\set ON_ERROR_STOP on
+begin;
+select pg_sleep(0.2);
+update agent_runs set status = 'running', updated_at = now() where id = '$RUN_CLAIM_A' and status = 'queued' returning id;
+commit;
+SQL
+cp /tmp/integration_abc_claim_a1.sql /tmp/integration_abc_claim_a2.sql
+psql -h $PGHOST -p $PGPORT -U $PGUSER -d "$PGDATABASE" -v ON_ERROR_STOP=1 -q -f /tmp/integration_abc_claim_a1.sql > /tmp/integration_abc_claim_a1_out.txt 2>&1 &
+CA1=$!
+psql -h $PGHOST -p $PGPORT -U $PGUSER -d "$PGDATABASE" -v ON_ERROR_STOP=1 -q -f /tmp/integration_abc_claim_a2.sql > /tmp/integration_abc_claim_a2_out.txt 2>&1 &
+CA2=$!
+wait $CA1 $CA2
+WINNERS_A=$(grep -c "$RUN_CLAIM_A" /tmp/integration_abc_claim_a1_out.txt /tmp/integration_abc_claim_a2_out.txt | awk -F: '{s+=$2} END {print s}')
+[ "$WINNERS_A" = "1" ] && pass "兩個並發的 agent-run 搶占呼叫，恰好只有 1 個搶到 running（等同最多一次付費執行）" || fail "搶到的呼叫數是 $WINNERS_A（應該是 1，代表可能同時付費執行兩次）"
+STATUS_CLAIM_A=$($PSQL -tAc "select status from agent_runs where id='$RUN_CLAIM_A';")
+[ "$STATUS_CLAIM_A" = "running" ] && pass "搶占之後最終狀態是 running（沒有被其他呼叫弄壞）" || fail "最終狀態是 $STATUS_CLAIM_A（應該是 running）"
+
+echo ""
+echo "--- (b) reaper 跟 agent-run 同時處理同一筆紀錄，兩者必須互斥 ---"
+MSG_CLAIM_B="80000000-0000-0000-0000-0000000000e2"
+RUN_CLAIM_B="90000000-0000-0000-0000-0000000000e2"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$MSG_CLAIM_B','$ROOM_A','user','$UID_A','claim race b', now() - interval '2 hours');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$RUN_CLAIM_B','$ROOM_A','$AGENT_A','$MSG_CLAIM_B','queued', now() - interval '2 hours', now() - interval '2 hours');"
+cat > /tmp/integration_abc_claim_reaper.sql <<SQL
+\set ON_ERROR_STOP on
+begin;
+select pg_sleep(0.2);
+update agent_runs set status = 'failed', error_code = 'orphaned_before_dispatch', updated_at = now() where id = '$RUN_CLAIM_B' and status = 'queued' returning id;
+commit;
+SQL
+cat > /tmp/integration_abc_claim_agentrun.sql <<SQL
+\set ON_ERROR_STOP on
+begin;
+select pg_sleep(0.2);
+update agent_runs set status = 'running', updated_at = now() where id = '$RUN_CLAIM_B' and status = 'queued' returning id;
+commit;
+SQL
+psql -h $PGHOST -p $PGPORT -U $PGUSER -d "$PGDATABASE" -v ON_ERROR_STOP=1 -q -f /tmp/integration_abc_claim_reaper.sql > /tmp/integration_abc_claim_reaper_out.txt 2>&1 &
+CB1=$!
+psql -h $PGHOST -p $PGPORT -U $PGUSER -d "$PGDATABASE" -v ON_ERROR_STOP=1 -q -f /tmp/integration_abc_claim_agentrun.sql > /tmp/integration_abc_claim_agentrun_out.txt 2>&1 &
+CB2=$!
+wait $CB1 $CB2
+WINNERS_B=$(grep -c "$RUN_CLAIM_B" /tmp/integration_abc_claim_reaper_out.txt /tmp/integration_abc_claim_agentrun_out.txt | awk -F: '{s+=$2} END {print s}')
+[ "$WINNERS_B" = "1" ] && pass "reaper 跟 agent-run 同時搶同一筆紀錄，恰好只有 1 個得逞（兩者互斥，不會同時動到）" || fail "得逞的呼叫數是 $WINNERS_B（應該是 1，代表 reaper 跟 agent-run 可能同時各自改了一次）"
+STATUS_CLAIM_B=$($PSQL -tAc "select status from agent_runs where id='$RUN_CLAIM_B';")
+[ "$STATUS_CLAIM_B" = "failed" ] || [ "$STATUS_CLAIM_B" = "running" ] && pass "最終狀態是單一、一致的結果：$STATUS_CLAIM_B（不是被兩邊各自改一半的中間狀態）" || fail "最終狀態是 $STATUS_CLAIM_B（應該是 failed 或 running 其中之一）"
+
+echo ""
+echo "--- (c) 已經被 reaper 標成 failed 的紀錄，之後才到的 agent-run 搶占必須拿到 0 筆，不能蓋回 running ---"
+MSG_CLAIM_C="80000000-0000-0000-0000-0000000000e3"
+RUN_CLAIM_C="90000000-0000-0000-0000-0000000000e3"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$MSG_CLAIM_C','$ROOM_A','user','$UID_A','claim race c', now() - interval '2 hours');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$RUN_CLAIM_C','$ROOM_A','$AGENT_A','$MSG_CLAIM_C','queued', now() - interval '2 hours', now() - interval '2 hours');"
+# 先讓 reaper 贏（模擬：chat-dispatch 的順手清掃比這筆紀錄原本對應的 agent-run 呼叫先跑到，
+# 把它標成孤兒 failed；之後那個「遲到」的 agent-run 呼叫才終於送達）。
+REAPED_COUNT_C=$($PSQL -tAc "update agent_runs set status = 'failed', error_code = 'orphaned_before_dispatch', updated_at = now() where id = '$RUN_CLAIM_C' and status = 'queued' returning id;" | grep -c "$RUN_CLAIM_C" || true)
+[ "$REAPED_COUNT_C" = "1" ] && pass "reaper 先執行，成功把這筆紀錄標成 failed" || fail "reaper 的 UPDATE 沒有搶到（回傳 $REAPED_COUNT_C 筆，應該是 1）"
+# grep -c 在完全沒有符合的列時會回傳離開碼 1（即使正確印出 0），在 set -e 之下會讓整支腳本
+# 中止——這裡預期的正確結果正是 0 筆（遲到的搶占本來就不該搶到任何東西），所以要加
+# `|| true` 讓「grep 找不到符合」這個正常情況不會被 set -e 誤判成腳本層級的錯誤。
+LATE_CLAIM_COUNT_C=$($PSQL -tAc "update agent_runs set status = 'running', updated_at = now() where id = '$RUN_CLAIM_C' and status = 'queued' returning id;" | grep -c "$RUN_CLAIM_C" || true)
+[ "$LATE_CLAIM_COUNT_C" = "0" ] && pass "遲到的 agent-run 搶占嘗試拿到 0 筆（status 已經不是 queued，不會誤觸發付費呼叫）" || fail "遲到的 agent-run 搶占竟然拿到 $LATE_CLAIM_COUNT_C 筆（不應該搶到，這代表可能對已經判定孤兒的紀錄又觸發了一次付費呼叫）"
+FINAL_STATUS_C=$($PSQL -tAc "select status from agent_runs where id='$RUN_CLAIM_C';")
+FINAL_ERRCODE_C=$($PSQL -tAc "select error_code from agent_runs where id='$RUN_CLAIM_C';")
+[ "$FINAL_STATUS_C" = "failed" ] && pass "最終狀態仍然是 failed，沒有被遲到的 agent-run 呼叫蓋回 running" || fail "最終狀態是 $FINAL_STATUS_C（應該仍然是 failed——狀態被從 failed 改回 running 了）"
+[ "$FINAL_ERRCODE_C" = "orphaned_before_dispatch" ] && pass "error_code 也維持 reaper 寫入的 orphaned_before_dispatch，沒有被覆蓋" || fail "error_code 是 $FINAL_ERRCODE_C（應該維持 orphaned_before_dispatch）"
+
+echo ""
+echo "=== [項目 7 補強] 明確處理：完全沒有後續聊天、且排程備援也沒被呼叫時，孤兒紀錄的行為 ==="
+echo "  這不是「還沒解決」的模糊地帶，而是這個架構刻意接受、且已經明確記錄／測試過的邊界："
+echo "  chat-dispatch 的順手清掃只會在『任何人對任何房間發訊息』時執行；獨立的"
+echo "  agent-run-reaper 端點只會在有人（使用者手動或 pg_cron 排程）呼叫它時執行。如果整個"
+echo "  部署完全沒有人發任何訊息、部署者也沒有開啟 README「附加設定：孤兒 queued 紀錄排程"
+echo "  復原」的 pg_cron 排程，就不會有任何觸發點去清掃卡住的紀錄——這是純粹的『沒有任何"
+echo "  程式碼路徑會被執行到』，不是『執行了但邏輯有 bug』。下面直接驗證這個誠實的邊界："
+MSG_STUCK="80000000-0000-0000-0000-0000000000e4"
+RUN_STUCK="90000000-0000-0000-0000-0000000000e4"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$MSG_STUCK','$ROOM_A','user','$UID_A','stuck forever without any trigger', now() - interval '2 hours');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$RUN_STUCK','$ROOM_A','$AGENT_A','$MSG_STUCK','queued', now() - interval '2 hours', now() - interval '2 hours');"
+echo "  （不呼叫 chat-dispatch、不呼叫 agent-run-reaper，單純等待，模擬完全沒有任何觸發點的情境）"
+sleep 1
+STUCK_STATUS=$($PSQL -tAc "select status from agent_runs where id='$RUN_STUCK';")
+[ "$STUCK_STATUS" = "queued" ] && pass "（誠實記錄，非測試失敗）確認沒有任何清掃管道被呼叫時，孤兒紀錄會維持 queued——這正是 README「附加設定：孤兒 queued 紀錄排程復原」建議開啟 pg_cron 排程的情境，需要部署者自行決定要不要為了涵蓋『完全沒人發訊息』這種邊界情境而開啟" || fail "預期沒有任何清掃管道被呼叫時應該仍是 queued，實際變成了 $STUCK_STATUS——代表存在我們沒預期到的背景機制，需要回頭確認"
+
+echo ""
 if [ "$FAIL" = "0" ]; then
   echo "=== 全部通過 ==="
   exit 0

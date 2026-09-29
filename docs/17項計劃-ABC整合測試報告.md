@@ -441,3 +441,160 @@ deno check（chat-dispatch/agent-run/worker-task-start/approval-decide）
 
 **這個分支沒有合併、沒有部署、沒有修改正式 Supabase**，跟第 7、8 節的既有承諾一致；
 以上所有測試都在本機一次性建立、測試完即丟棄的 PostgreSQL 資料庫上執行。
+
+## 10. 2026-09-29 第三輪更新：合併前的 agent-run 併發邊界修正
+
+審閱意見指出：9.1 節修好了「chat-dispatch 中斷導致的孤兒 queued 紀錄」，但沒有處理
+`agent-run/index.ts` 本身的併發搶占邊界——原本的寫法是「SELECT 確認 status='queued'」
+跟「UPDATE 成 running」是兩個分開的步驟，中間有 race window；且 UPDATE 成 running 這
+一步完全沒有帶 `status='queued'` 條件，理論上會把 reaper 剛寫入的 `failed` 蓋回
+`running`。這一節記錄實際的程式碼修正與併發測試結果。
+
+### 10.1 問題：非原子的「確認再更新」與無條件的狀態覆蓋
+
+修正前的 `agent-run/index.ts`（第 57-77 行）：
+
+```ts
+const { data: run } = await admin.from("agent_runs").select("...status...").eq("id", runId).single();
+if (run.status !== "queued") return skipped;
+if (run.cancel_requested) { ...標成 cancelled... }
+await admin.from("agent_runs").update({ status: "running" }).eq("id", runId); // 沒有 .eq("status", "queued")
+```
+
+兩個問題：(1) SELECT 跟 UPDATE 分開，兩個幾乎同時到達的 agent-run 呼叫（例如
+chat-dispatch 逾時重試、使用者連點）都可能在各自的 SELECT 看到 `status='queued'`，
+全部往下跑到真的會計費的供應商呼叫；(2) 最後那個 UPDATE 沒有帶
+`.eq("status", "queued")` 條件，如果這個時間點 `_shared/agentRunReaper.ts` 的清掃
+剛好把這筆紀錄標成 `failed`（孤兒判定），這個無條件的 UPDATE 會直接把 `failed` 蓋回
+`running`，讓一筆已經被判定孤兒、不該再執行的紀錄又跑去打真的會計費的 API。
+
+### 10.2 修正：單一條件式 UPDATE 當唯一搶占點
+
+改成單一原子操作：`UPDATE agent_runs SET status='running', updated_at=now() WHERE
+id=$1 AND status='queued' RETURNING ...`。Postgres 對這一列的隱含列鎖保證同一筆紀錄
+最多只有一個呼叫端能拿到非空的 `RETURNING` 結果；其餘呼叫端（不管是重複的 agent-run
+呼叫，還是跟 reaper 撞在一起）都會拿到空結果，必須在這裡停手，不能再往下執行、也不能
+覆蓋別人已經寫入的狀態。`cancel_requested` 的檢查搬到搶占成功之後才做（這時已經確定
+只有這一個呼叫端持有 running 狀態，不會有並發問題）。
+
+### 10.3 測試方法論：跟項目 6/8 一致，只測 SQL 層搶占原語
+
+`agent-run` 真的呼叫供應商 API 的部分（`createProviderAdapter` 打的是硬編碼、不可用
+環境變數改的真實 Anthropic/OpenAI/Google 端點）不在這裡測，延續本報告 3.3 節、Phase C
+報告對項目 6（`worker_tasks` 原子搶占）與項目 8（`approval_requests` 原子搶占）已經
+採用、且經使用者檢閱通過的方法論：只驗證 SQL 層條件式 UPDATE 本身的原子性，不執行真的
+會打付費 API 的程式碼路徑。三組新測試都加在 `scripts/integration-abc-sql-rpc-test.sh`
+「[項目 7 補強] agent-run 原子搶占」：
+
+- **(a) 兩個並發的 agent-run 呼叫同時搶同一筆 queued 紀錄**：兩個並發 process 對同一筆
+  `agent_runs` 執行 agent-run 用的那個條件式 UPDATE（`WHERE status='queued'`），確認
+  恰好只有 1 個搶到——對應使用者要求的「最多一次付費執行」。
+- **(b) reaper 與 agent-run 同時處理同一筆紀錄**：一個 process 執行 reaper 用的
+  `UPDATE ... SET status='failed' WHERE status='queued'`，另一個並發執行 agent-run 用的
+  `UPDATE ... SET status='running' WHERE status='queued'`，確認兩者互斥、恰好只有 1 個
+  得逞，最終狀態是單一、一致的結果（不會是被兩邊各自改一半的中間狀態）。
+- **(c) 已經被 reaper 標成 failed 的紀錄，之後才到的 agent-run 搶占**：先讓 reaper 的
+  UPDATE 執行並成功（模擬 reaper 比這筆紀錄原本對應的 agent-run 呼叫先跑到），再執行
+  agent-run 的搶占 UPDATE，確認拿到 0 筆、最終狀態仍然是 `failed`、`error_code` 仍然是
+  `orphaned_before_dispatch`——直接對應使用者要求的「狀態不會從 failed 被改回
+  running」。
+
+實測結果（2026-09-29，本機執行）：
+
+```
+--- (a) 兩個並發的 agent-run 呼叫同時搶同一筆 queued 紀錄 ---
+  PASS: 兩個並發的 agent-run 搶占呼叫，恰好只有 1 個搶到 running（等同最多一次付費執行）
+  PASS: 搶占之後最終狀態是 running（沒有被其他呼叫弄壞）
+
+--- (b) reaper 跟 agent-run 同時處理同一筆紀錄，兩者必須互斥 ---
+  PASS: reaper 跟 agent-run 同時搶同一筆紀錄，恰好只有 1 個得逞（兩者互斥，不會同時動到）
+  PASS: 最終狀態是單一、一致的結果：failed（不是被兩邊各自改一半的中間狀態）
+
+--- (c) 已經被 reaper 標成 failed 的紀錄，之後才到的 agent-run 搶占必須拿到 0 筆，不能蓋回 running ---
+  PASS: reaper 先執行，成功把這筆紀錄標成 failed
+  PASS: 遲到的 agent-run 搶占嘗試拿到 0 筆（status 已經不是 queued，不會誤觸發付費呼叫）
+  PASS: 最終狀態仍然是 failed，沒有被遲到的 agent-run 呼叫蓋回 running
+  PASS: error_code 也維持 reaper 寫入的 orphaned_before_dispatch，沒有被覆蓋
+```
+
+`deno check supabase/functions/agent-run/index.ts` 跟修正前的 baseline（4.2 節：
+`TS2304 x1, TS2322 x1, TS2339 x6, TS2345 x1, TS7006 x1`）逐一比對錯誤代碼與數量，
+完全一致——這次的搶占邏輯重構沒有引入任何新的型別錯誤。
+
+### 10.4 明確處理：完全沒有後續聊天、且排程備援也沒被啟用時的卡住紀錄
+
+這不是留一個模糊地帶，而是把這個架構刻意接受的邊界講清楚、並且用測試證實它的行為
+確實如文件描述，不是別的、更嚴重的未知狀態：
+
+- chat-dispatch 的順手清掃只會在「任何人對任何房間發訊息」時執行；獨立的
+  `agent-run-reaper` 端點只會在有人（手動或 `pg_cron` 排程）呼叫它時執行。
+- 如果整個 Supabase 專案**同時滿足**「完全沒有人發任何訊息」跟「部署者沒有開啟 README
+  『附加設定：孤兒 queued 紀錄排程復原』的 `pg_cron` 排程」這兩個條件，就不存在任何會
+  被執行到的程式碼路徑去清掃卡住的紀錄——這是純粹的「沒有任何觸發點」，不是「執行了
+  但邏輯有 bug」，兩者是完全不同性質的問題，混為一談會讓人誤以為修了孤兒清掃機制之後
+  這個情境也一併解決了，事實上並沒有。
+- `integration-abc-sql-rpc-test.sh` 新增「[項目 7 補強] 明確處理」測項，直接驗證這個
+  邊界：插入一筆孤兒紀錄，不呼叫 `chat-dispatch`、不呼叫 `agent-run-reaper`，確認它
+  維持 `queued`——這是預期中、已記錄的行為，不是測試失敗：
+  ```
+  PASS: （誠實記錄，非測試失敗）確認沒有任何清掃管道被呼叫時，孤兒紀錄會維持 queued——
+  這正是 README「附加設定：孤兒 queued 紀錄排程復原」建議開啟 pg_cron 排程的情境，
+  需要部署者自行決定要不要為了涵蓋『完全沒人發訊息』這種邊界情境而開啟
+  ```
+- **給部署者的具體建議**（沒有寫進程式碼、只是文件層級的建議，部署者仍然要自己決定）：
+  完全靜態、幾乎不會有人主動發訊息的部署（例如展示用、單人測試用），建議開啟
+  `agent-run-reaper` 的 `pg_cron` 排程；正常有使用者持續互動的部署，opportunistic 清掃
+  已經足夠涵蓋絕大多數情境，排程只是多一層保險。
+
+### 10.5 獨立 agent-run-reaper 端點：資料庫清掃失敗時要回報失敗
+
+審閱意見另外指出：`agent-run-reaper` 之前不管 `reapStaleQueuedAgentRuns()` 內部查詢
+有沒有成功，都回傳 `ok:true`，排程監控（或手動呼叫的人）完全看不出「這次真的清掃過、
+確實沒有孤兒」跟「這次資料庫查詢本身失敗、根本沒清掃到任何東西」的差別。
+
+修正：`ReapResult` 新增 `ok: boolean` 欄位（跟 `reapedIds` 分開，因為「清掃過、確實
+沒有孤兒」跟「清掃失敗」都會讓 `reapedIds` 是空陣列，兩者不能混為一談）；
+`agent-run-reaper/index.ts` 在 `ok:false` 時回傳 HTTP 500、`error_code:
+reap_query_failed`，不再假裝成功。`chat-dispatch` 的順手清掃呼叫維持原本的
+「盡力而為、失敗不擋訊息派送」，不受這個欄位影響（本來就沒有檢查回傳值）。
+
+`scripts/integration-abc-edge-function-test.sh` 新增「agent-run-reaper 在資料庫清掃
+失敗時要回報失敗」測項，用真實的資料庫層失敗來測（`revoke update on agent_runs from
+service_role`，模擬 `reapStaleQueuedAgentRuns()` 內部的 UPDATE 真的查詢失敗），不是
+只讀程式碼假設會怎麼樣：
+
+```
+資料庫沒有 UPDATE 權限時的回應（HTTP 500）：{"error":{"code":"reap_query_failed","message":"清掃孤兒 queued 紀錄時資料庫查詢失敗，這次沒有清掃到任何紀錄，請檢查後端日誌並重試"}}
+PASS: 清掃查詢失敗時，agent-run-reaper 回報 HTTP 500（不是假裝成功的 200）
+PASS: 錯誤內容帶有明確的 reap_query_failed 代碼，排程監控可以分辨這次是真的失敗
+PASS: 清掃查詢失敗時，這筆孤兒紀錄確實沒有被清掃到（狀態仍是 queued，跟回報的失敗一致）
+PASS: 復原 UPDATE 權限後，agent-run-reaper 恢復正常運作（HTTP 200）
+PASS: 恢復正常後，剛才卡住的孤兒紀錄也被正確清掃成 failed
+```
+
+### 10.6 本輪完整回歸測試結果
+
+```
+scripts/integration-abc-sql-rpc-test.sh        → === 全部通過 ===（含新增的 3 組併發測試 + 1 組誠實邊界記錄）
+scripts/integration-abc-edge-function-test.sh  → === 全部通過 ===（含新增的 reaper 失敗回報測試，孤兒復原兩輪測試沿用 9.1 節、重跑仍全過）
+scripts/integration-abc-knowledge-required-test.sh → === 全部通過===（本輪未改動，重跑確認未受影響）
+npm run typecheck  → 0 錯誤
+npm run lint       → 0 錯誤（2 個既有 warning，跟本輪改動無關）
+npm run build      → 通過
+deno check agent-run/index.ts       → 跟 baseline 完全一致（TS2304x1/TS2322x1/TS2339x6/TS2345x1/TS7006x1），無新增錯誤
+deno check agent-run-reaper/index.ts → 0 錯誤
+deno check chat-dispatch/index.ts   → 跟 baseline 完全一致（本輪未改動這支檔案）
+```
+
+### 10.7 仍未達標的項目（誠實重申，這一輪同樣沒有處理）
+
+跟 9.5 節記錄的一樣，這一輪的三項修正（agent-run 原子搶占、明確處理孤兒紀錄的邊界
+情境、agent-run-reaper 失敗回報）全部圍繞項目 7 的併發正確性，**沒有觸碰**：
+
+- **項目 16**：`usage_daily` 仍然只有原子計數，沒有預算上限執行機制。
+- **項目 17**：Phase D（項目 5/11/12/15）仍然完全還沒開始；`deno check` 仍然只是
+  印出來、不擋 CI；`agent-run` 真的呼叫供應商 API 的部分仍然沒有端對端測試，本輪
+  新增的併發測試延續既有方法論，只驗證 SQL 層搶占原語。
+
+**這個分支仍然沒有合併、沒有部署、沒有修改正式 Supabase**，本輪所有測試同樣在本機
+一次性建立、測試完即丟棄的 PostgreSQL 資料庫上執行。

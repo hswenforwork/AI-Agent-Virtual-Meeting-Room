@@ -418,6 +418,35 @@ echo "  service_role 呼叫回應（HTTP $CODE_SERVICE）：$(echo "$RESP_SERVIC
 STATUS_REAPER=$($PSQL -tAc "select status from agent_runs where id='$ORPHAN_RUN_REAPER';")
 [ "$STATUS_REAPER" = "failed" ] && pass "獨立 agent-run-reaper 端點也能清掃孤兒 queued 紀錄" || fail "孤兒紀錄狀態是 $STATUS_REAPER（應該是 failed）"
 
+echo ""
+echo "=== [項目 7] agent-run-reaper 在資料庫清掃失敗時要回報失敗，不能假裝清掃成功 ==="
+echo "  用真實的資料庫層失敗來測（撤銷 service_role 對 agent_runs 的 UPDATE 權限，模擬"
+echo "  reapStaleQueuedAgentRuns() 內部的 UPDATE 真的查詢失敗的情境），不是只讀程式碼假設。"
+ORPHAN_RUN_REAPER_FAIL="50000000-0000-0000-0000-0000000000fd"
+ORPHAN_MSG_REAPER_FAIL="40000000-0000-0000-0000-0000000000fe"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$ORPHAN_MSG_REAPER_FAIL','$ROOM_A','user','$UID_A','orphaned for reaper failure test', now() - interval '2 hours');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$ORPHAN_RUN_REAPER_FAIL','$ROOM_A','$AGENT_A','$ORPHAN_MSG_REAPER_FAIL','queued', now() - interval '2 hours', now() - interval '2 hours');"
+$PSQL -c "revoke update on agent_runs from service_role;"
+
+RESP_REAP_FAIL=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_SERVICE" -H "Content-Type: application/json" -d "{}")
+CODE_REAP_FAIL=$(echo "$RESP_REAP_FAIL" | tail -1)
+BODY_REAP_FAIL=$(echo "$RESP_REAP_FAIL" | head -n -1)
+echo "  資料庫沒有 UPDATE 權限時的回應（HTTP $CODE_REAP_FAIL）：$BODY_REAP_FAIL"
+[ "$CODE_REAP_FAIL" = "500" ] && pass "清掃查詢失敗時，agent-run-reaper 回報 HTTP 500（不是假裝成功的 200）" || fail "應該回 500，實際是 HTTP $CODE_REAP_FAIL"
+echo "$BODY_REAP_FAIL" | grep -q "reap_query_failed" && pass "錯誤內容帶有明確的 reap_query_failed 代碼，排程監控可以分辨這次是真的失敗" || fail "回應內容沒有 reap_query_failed：$BODY_REAP_FAIL"
+
+$PSQL -c "grant update on agent_runs to service_role;"
+STATUS_REAPER_FAIL=$($PSQL -tAc "select status from agent_runs where id='$ORPHAN_RUN_REAPER_FAIL';")
+[ "$STATUS_REAPER_FAIL" = "queued" ] && pass "清掃查詢失敗時，這筆孤兒紀錄確實沒有被清掃到（狀態仍是 queued，跟回報的失敗一致）" || fail "孤兒紀錄狀態是 $STATUS_REAPER_FAIL（應該仍是 queued，因為 UPDATE 權限被撤銷時不可能成功清掃）"
+
+# 復原權限後，重新呼叫一次確認端點恢復正常（避免這個測項本身把資料庫狀態留在
+# 破壞性的中間狀態，影響到後面的測項或人工複查這支腳本時的觀感）。
+RESP_REAP_RECOVER=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_SERVICE" -H "Content-Type: application/json" -d "{}")
+CODE_REAP_RECOVER=$(echo "$RESP_REAP_RECOVER" | tail -1)
+[ "$CODE_REAP_RECOVER" = "200" ] && pass "復原 UPDATE 權限後，agent-run-reaper 恢復正常運作（HTTP 200）" || fail "復原權限後應該恢復 200，實際是 HTTP $CODE_REAP_RECOVER"
+STATUS_REAPER_RECOVER=$($PSQL -tAc "select status from agent_runs where id='$ORPHAN_RUN_REAPER_FAIL';")
+[ "$STATUS_REAPER_RECOVER" = "failed" ] && pass "恢復正常後，剛才卡住的孤兒紀錄也被正確清掃成 failed" || fail "孤兒紀錄狀態是 $STATUS_REAPER_RECOVER（應該是 failed）"
+
 kill "$REAPER_PID" 2>/dev/null || true
 sleep 1
 

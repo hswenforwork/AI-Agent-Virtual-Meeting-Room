@@ -54,18 +54,50 @@ Deno.serve(async (req) => {
     runId = body?.runId;
     if (!runId) return jsonError("缺少 runId", 400, headers);
 
-    const { data: run, error: runErr } = await admin
+    const { data: existingRun, error: existingErr } = await admin
       .from("agent_runs")
-      .select("id, room_id, agent_id, trigger_message_id, status, is_loop_in, loop_in_reason, cancel_requested")
+      .select("id")
       .eq("id", runId)
-      .single();
-    if (runErr || !run) return jsonError("找不到這個 run", 404, "not_found", headers);
-    if (run.status !== "queued") {
+      .maybeSingle();
+    if (existingErr) {
+      console.error("查詢 agent_run 是否存在失敗", runId, existingErr);
+      return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
+    }
+    if (!existingRun) return jsonError("找不到這個 run", 404, "not_found", headers);
+
+    // 原子搶占：只有真的把 status 從 queued 換成 running 的這次呼叫，才能往下執行、
+    // 花錢呼叫供應商 API。先 SELECT 確認 status 再另外 UPDATE 的寫法有 race window——
+    // chat-dispatch 逾時重試、使用者連點、或 _shared/agentRunReaper.ts 的清掃剛好在
+    // 同一瞬間把這筆紀錄標成孤兒 failed，都可能讓兩個（或以上）並發的 agent-run 呼叫
+    // 各自在自己的 SELECT 看到 status='queued'，全部往下跑到真的會計費的供應商呼叫；
+    // 如果這裡的 UPDATE 沒有帶 status='queued' 條件，也會直接把 reaper 剛寫入的 failed
+    // 蓋回 running，讓一筆已經被判定孤兒、不該再執行的紀錄又跑去打真的會計費的 API。
+    // 這裡用單一條件式 UPDATE（WHERE id = runId AND status = 'queued'，帶 RETURNING）
+    // 當唯一的搶占點：Postgres 對這一列的隱含列鎖保證同一筆紀錄最多只有一個呼叫端能拿到
+    // 非空的 RETURNING 結果，其餘呼叫端（不管是重複的 agent-run 呼叫，還是跟 reaper 撞在
+    // 一起）都會拿到空結果、必須在這裡就停手，不能再繼續往下執行。
+    const { data: run, error: claimErr } = await admin
+      .from("agent_runs")
+      .update({ status: "running", updated_at: new Date().toISOString() })
+      .eq("id", runId)
+      .eq("status", "queued")
+      .select("id, room_id, agent_id, trigger_message_id, is_loop_in, loop_in_reason, cancel_requested")
+      .maybeSingle();
+    if (claimErr) {
+      console.error("agent-run 搶占 running 狀態失敗", runId, claimErr);
+      return jsonError("系統暫時發生錯誤，請稍後重試", 500, "internal_error", headers);
+    }
+    if (!run) {
+      // 沒搶到：這筆紀錄已經不是 queued 了（被另一次 agent-run 呼叫搶走、被使用者取消，
+      // 或被 reaper 標成孤兒 failed），這次呼叫必須在這裡停下，不能再執行任何一步
+      // 付費的供應商呼叫，也不能把已經被別的呼叫端寫入的狀態蓋回去。
       return new Response(JSON.stringify({ skipped: true }), { headers });
     }
 
     // 使用者在代理還沒真正開始跑（甚至 agent-run 都還沒被觸發）之前就按了停止
-    // （brainstorms/2026-09-23-stop-generation.md）：直接標成 cancelled，不用呼叫任何供應商。
+    // （brainstorms/2026-09-23-stop-generation.md）：搶到 running 之後立刻檢查，
+    // 直接標成 cancelled，不用呼叫任何供應商。這裡不會有並發問題——上面的條件式
+    // UPDATE 已經保證同一時間只有這一個呼叫端持有這筆紀錄的 running 狀態。
     if (run.cancel_requested) {
       await admin
         .from("agent_runs")
@@ -73,8 +105,6 @@ Deno.serve(async (req) => {
         .eq("id", runId);
       return new Response(JSON.stringify({ ok: false, cancelled: true }), { headers });
     }
-
-    await admin.from("agent_runs").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", runId);
 
     const { data: agent } = await admin
       .from("agents")
