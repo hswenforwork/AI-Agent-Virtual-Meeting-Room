@@ -101,8 +101,8 @@ alter default privileges for role current_user in schema public grant all on seq
 alter default privileges for role current_user in schema public grant execute on functions to authenticated, anon, service_role;
 SQL
 
-echo "=== 依整合後的最終順序套用全部 migration（0001~0025） ==="
-for f in "$REPO_ROOT"/supabase/migrations/00{01..25}_*.sql; do
+echo "=== 依整合後的最終順序套用全部 migration（0001~0026） ==="
+for f in "$REPO_ROOT"/supabase/migrations/00{01..26}_*.sql; do
   base="$(basename "$f")"
   if [ "$base" = "0006_enable_realtime.sql" ]; then
     grep -v "alter publication supabase_realtime add table" "$f" | $PSQL
@@ -112,7 +112,7 @@ for f in "$REPO_ROOT"/supabase/migrations/00{01..25}_*.sql; do
     $PSQL -f "$f"
   fi
 done
-echo "  （成功套用 0001~0025，確認三個 PR 的 migration 依整合後的最終序號可以從乾淨的
+echo "  （成功套用 0001~0026，確認三個 PR 的 migration 依整合後的最終序號可以從乾淨的
   main 既有 schema 一路套用下去，不是只靠 GitHub 各自的『可合併』狀態）"
 
 echo "=== 建立測試帳號 A / B、各自的房間與代理 ==="
@@ -176,29 +176,22 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PR/message_mentions" -H 
 echo ""
 echo "=== [項目 3 + 9 交互測試] 透過 send_message_with_mentions() RPC 夾帶跨房間 agent_id，跟直接 insert 一樣要被擋下 ==="
 echo "  （這是三個 PR 各自的測試報告都沒測過的組合：#45 收緊了 message_mentions 的 RLS policy，"
-echo "  #46 新增的 RPC 是 security invoker，理論上一樣受這條 policy 約束，但 RPC 内部有例外處理，"
-echo "  需要實際呼叫確認行為，不能只看程式碼推論）"
+echo "  #46 新增的 RPC 是 security invoker，理論上一樣受這條 policy 約束。使用者回報這個組合"
+echo "  原本只會讓整個 RPC 交易因為通用的 RLS 違規訊息 rollback，使用者只看到一句看不懂的"
+echo "  Postgres 錯誤，猜不出真正原因。修正：RPC 現在在動用任何 INSERT 之前，先明確檢查"
+echo "  點名的 agent_id 是不是都屬於這個房間，不是的話直接丟出一句看得懂的錯誤——保留"
+echo "  『整則訊息一起 rollback』的行為，但不再是靠 RLS 違規這種不友善的方式）"
 CLIENT_ID_X="client-cross-room-x1"
 RESP_X=$(curl -s -w "\n%{http_code}" -X POST "$PR/rpc/send_message_with_mentions" -H "Authorization: Bearer $JWT_A" -H "Content-Type: application/json" -d "{\"p_room_id\":\"$ROOM_A\",\"p_content\":\"trying cross-room mention\",\"p_client_id\":\"$CLIENT_ID_X\",\"p_mention_agent_ids\":[\"$AGENT_B\"]}")
 HTTP_CODE_X=$(echo "$RESP_X" | tail -1)
 BODY_X=$(echo "$RESP_X" | head -n -1)
 echo "  RPC 回應（HTTP $HTTP_CODE_X）：$BODY_X"
-if [ "$HTTP_CODE_X" = "403" ]; then
-  echo "  行為：整個 RPC 呼叫連同訊息本體一起被擋下（HTTP 403），訊息完全沒有送出。"
-  MSG_COUNT_X=$($PSQL -tAc "select count(*) from messages where room_id='$ROOM_A' and client_id='$CLIENT_ID_X';")
-  [ "$MSG_COUNT_X" = "0" ] && pass "訊息本體確實沒有被寫入（RPC 整個交易連同訊息一起 rollback，不是只擋下 mention）" || fail "訊息本體竟然被寫入了 $MSG_COUNT_X 筆（RPC 應該整個 rollback）"
-  echo "  ⚠ 這跟修正前『訊息照樣送出、只有 mention 被 RLS 擋下』的行為不同——因為 RPC 是同一個"
-  echo "  交易內完成訊息 + mentions，mentions 的 RLS 違規會讓整個交易（含訊息本體）rollback。"
-  echo "  只有『前端自己組出不存在或跨房間的 agent_id』才會觸發，正常 UI 不會發生（UI 的候選"
-  echo "  清單只會來自同一個房間的代理），影響範圍是使用者自己的用戶端送出異常請求時，自己的"
-  echo "  訊息也送不出去（不是被別人利用來影響別人），已記錄在整合測試報告的殘留風險。"
-elif [ "$HTTP_CODE_X" = "200" ] || [ "$HTTP_CODE_X" = "201" ]; then
-  MSG_ID_X=$(echo "$BODY_X" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).id))")
-  MENTION_COUNT_X=$($PSQL -tAc "select count(*) from message_mentions where message_id='$MSG_ID_X' and agent_id='$AGENT_B';")
-  [ "$MENTION_COUNT_X" = "0" ] && pass "訊息送出成功，但跨房間的 mention 沒有被寫入（RLS 在 mentions 迴圈內被跳過而非整個 rollback）" || fail "跨房間 mention 竟然被寫入了（HTTP $HTTP_CODE_X，mention 筆數 $MENTION_COUNT_X）——這會是嚴重的權限繞過"
-else
-  fail "非預期的回應碼 $HTTP_CODE_X"
-fi
+[ "$HTTP_CODE_X" = "400" ] && pass "跨房間點名被 RPC 自己的前置檢查擋下（HTTP 400，不是通用的 403 RLS 違規）" || fail "應該回 400，實際是 $HTTP_CODE_X"
+HINT_X=$(echo "$BODY_X" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).hint||'')}catch{console.log('')}})")
+[ "$HINT_X" = "mention_agent_not_in_room" ] && pass "錯誤訊息帶有明確的 hint（mention_agent_not_in_room），不是模糊的權限錯誤" || fail "hint 是「$HINT_X」（應該是 mention_agent_not_in_room）"
+echo "$BODY_X" | grep -q "點名的其中一位代理不屬於這個房間" && pass "錯誤訊息是使用者看得懂的中文提示（不是原始 Postgres/RLS 錯誤文字）" || fail "錯誤訊息內容不是預期的友善提示：$BODY_X"
+MSG_COUNT_X=$($PSQL -tAc "select count(*) from messages where room_id='$ROOM_A' and client_id='$CLIENT_ID_X';")
+[ "$MSG_COUNT_X" = "0" ] && pass "訊息本體確實沒有被寫入（前置檢查在任何 INSERT 之前就擋下，整個交易 rollback）" || fail "訊息本體竟然被寫入了 $MSG_COUNT_X 筆（應該整個 rollback）"
 
 echo ""
 echo "=== [項目 9] send_message_with_mentions() 合法路徑：同一房間點名、client_id 重試冪等 ==="

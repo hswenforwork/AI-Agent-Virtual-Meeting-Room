@@ -31,9 +31,29 @@ as $$
 declare
   v_message public.messages;
   v_agent_id uuid;
+  v_requested_count int;
+  v_valid_count int;
 begin
   if p_client_id is null or length(trim(p_client_id)) = 0 then
     raise exception 'client_id is required' using errcode = '22023';
+  end if;
+
+  -- 整合測試回報（docs/17項計劃-ABC整合測試報告.md 項目 3+9 交互測試）：跨房間點名
+  -- 原本完全交給 message_mentions 既有的 RLS policy 擋下，那個 policy 一違反就是整個
+  -- 函式的交易 rollback（含訊息本體），使用者只會看到一句通用的 Postgres RLS 違規
+  -- 訊息，看不出真正原因、也不知道訊息其實整則都沒送出。這裡保留「整則訊息一起
+  -- rollback」的行為（不拆成部分成功），但在動用 RLS 之前先明確檢查：point 名的每個
+  -- agent_id 是不是都屬於這個房間，不是的話直接丟出使用者看得懂的錯誤，不必等
+  -- RLS 違規才知道。
+  if p_mention_agent_ids is not null and array_length(p_mention_agent_ids, 1) > 0 then
+    select count(distinct x) into v_requested_count from unnest(p_mention_agent_ids) as x;
+    select count(distinct id) into v_valid_count
+    from public.agents
+    where id = any(p_mention_agent_ids) and room_id = p_room_id;
+    if v_valid_count <> v_requested_count then
+      raise exception '點名的其中一位代理不屬於這個房間，訊息未送出，請重新整理頁面後再試一次。'
+        using errcode = 'P0001', hint = 'mention_agent_not_in_room';
+    end if;
   end if;
 
   select * into v_message

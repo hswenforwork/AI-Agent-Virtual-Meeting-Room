@@ -95,8 +95,8 @@ alter default privileges for role current_user in schema public grant all on seq
 alter default privileges for role current_user in schema public grant execute on functions to authenticated, anon, service_role;
 SQL
 
-echo "=== 依整合後的最終順序套用全部 migration（0001~0025） ==="
-for f in "$REPO_ROOT"/supabase/migrations/00{01..25}_*.sql; do
+echo "=== 依整合後的最終順序套用全部 migration（0001~0026） ==="
+for f in "$REPO_ROOT"/supabase/migrations/00{01..26}_*.sql; do
   base="$(basename "$f")"
   if [ "$base" = "0006_enable_realtime.sql" ]; then
     grep -v "alter publication supabase_realtime add table" "$f" | $PSQL
@@ -321,36 +321,105 @@ kill "$(cat "$WORKDIR/dispatch.pid")" 2>/dev/null || true
 sleep 1
 
 echo ""
-echo "=== [項目 7] 三 PR 整合特別驗證：queued 紀錄如果不是因為 fetch 失敗，而是整個 chat-dispatch"
-echo "  執行環境在『insert agent_runs』之後、還沒開始執行 dispatchAgentRuns()／進入 waitUntil()"
-echo "  之前就被中止（例如平台強制回收 isolate），有沒有任何背景機制會偵測、逾時、重試這筆"
-echo "  卡住的紀錄？ ==="
-echo "  程式碼檢查結果：chat-dispatch/index.ts 裡唯一會把卡住的 agent_run 標成 failed 的地方，"
-echo "  是 triggerAgentRun() 重試用盡後的那個條件式 UPDATE（見 index.ts 的 dispatchAgentRuns），"
-echo "  這段程式碼只有在『同一次 chat-dispatch 呼叫真的執行到 dispatchAgentRuns()／waitUntil()"
-echo "  那一步』才會跑到。如果中斷點更早（insert 完 agent_runs 就中止，例如平台在回應送出"
-echo "  之前就直接砍掉整個 isolate），這段程式碼根本沒有機會執行。"
-echo "  用一筆『模擬中斷』的 queued 紀錄（不透過 chat-dispatch 自己 insert，直接代表『insert"
-echo "  成功但後續沒有任何一段程式碼碰過它』的狀態）確認：沒有任何排程/trigger/其他 Edge"
-echo "  Function 會主動偵測、逾時這筆紀錄——"
-ORPHAN_MSG="40000000-0000-0000-0000-0000000000f2"
-$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$ORPHAN_MSG','$ROOM_A','user','$UID_A','orphaned', now() - interval '2 hours');"
-ORPHAN_RUN="50000000-0000-0000-0000-0000000000f1"
-$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$ORPHAN_RUN','$ROOM_A','$AGENT_A','$ORPHAN_MSG','queued', now() - interval '2 hours', now() - interval '2 hours');"
-echo "  （已插入一筆 2 小時前建立、狀態 queued 的孤兒紀錄，模擬『chat-dispatch 在這之後就沒有"
-echo "  任何後續執行』）"
+echo "=== [項目 7] 孤兒 queued 紀錄中斷復原（真實修正驗證，可重跑兩輪證明不是巧合）==="
+echo "  情境：chat-dispatch 執行環境在『insert agent_runs』之後、還沒開始執行"
+echo "  dispatchAgentRuns()／進入 waitUntil() 之前就被中止（例如平台強制回收 isolate），"
+echo "  原本 triggerAgentRun() 重試用盡才會做的那個條件式 UPDATE 完全沒有機會執行到，"
+echo "  這筆紀錄會永遠卡在 queued。修正：_shared/agentRunReaper.ts 的 reapStaleQueuedAgentRuns()"
+echo "  現在會在 chat-dispatch 每次被呼叫時（不限同一則訊息/同一個房間）順手清掃一次全域逾時"
+echo "  仍是 queued 的紀錄，下面直接呼叫真實的 chat-dispatch/index.ts 驗證這個清掃真的會發生，"
+echo "  不是只讀程式碼推論。"
+
+reap_round() {
+  local round="$1"
+  local orphan_run_id="$2"
+  local orphan_msg_id="$3"
+  local fresh_run_id="$4"
+  local fresh_msg_id="$5"
+  local trigger_msg_id="$6"
+
+  $PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$orphan_msg_id','$ROOM_A','user','$UID_A','orphaned round $round', now() - interval '2 hours');"
+  $PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$orphan_run_id','$ROOM_A','$AGENT_A','$orphan_msg_id','queued', now() - interval '2 hours', now() - interval '2 hours');"
+  echo "  round $round：已插入一筆 2 小時前建立、狀態 queued 的孤兒紀錄 $orphan_run_id"
+
+  # 對照組：剛建立、還在正常逾時重試視窗內的 queued 紀錄，用來確認清掃邏輯不會
+  # 「見到 queued 就殺」，而是真的只挑逾時的——避免假陽性把還在跑的請求誤判成孤兒。
+  $PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$fresh_msg_id','$ROOM_A','user','$UID_A','fresh round $round', now());"
+  $PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$fresh_run_id','$ROOM_A','$AGENT_A','$fresh_msg_id','queued', now(), now());"
+  echo "  round $round：已插入一筆剛建立、狀態 queued 的對照組紀錄 $fresh_run_id（不該被清掃）"
+
+  # 觸發一次跟這兩筆孤兒/對照組完全無關的訊息，證明清掃是「chat-dispatch 被呼叫就順手
+  # 執行」的全域行為，不是因為剛好處理到同一則訊息或同一個代理。
+  $PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content) values ('$trigger_msg_id','$ROOM_A','user','$UID_A','round $round trigger, unrelated');"
+  $PSQL -c "insert into message_mentions (message_id, agent_id) values ('$trigger_msg_id','$AGENT_A');"
+  curl -s -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_A" -H "Content-Type: application/json" -d "{\"messageId\":\"$trigger_msg_id\"}" > /dev/null
+  sleep 1.5
+
+  local orphan_status orphan_errcode fresh_status
+  orphan_status=$($PSQL -tAc "select status from agent_runs where id='$orphan_run_id';")
+  orphan_errcode=$($PSQL -tAc "select error_code from agent_runs where trigger_message_id='$orphan_msg_id';")
+  fresh_status=$($PSQL -tAc "select status from agent_runs where id='$fresh_run_id';")
+
+  [ "$orphan_status" = "failed" ] && pass "round $round：2 小時前的孤兒 queued 紀錄被清掃成 failed" || fail "round $round：孤兒紀錄狀態是 $orphan_status（應該是 failed）"
+  [ "$orphan_errcode" = "orphaned_before_dispatch" ] && pass "round $round：error_code 記錄為 orphaned_before_dispatch" || fail "round $round：error_code 是 $orphan_errcode（應該是 orphaned_before_dispatch）"
+  [ "$fresh_status" = "queued" ] && pass "round $round：剛建立、還在逾時視窗內的對照組紀錄沒有被誤清掃，仍是 queued" || fail "round $round：對照組紀錄被誤動成 $fresh_status（應該仍是 queued，這是假陽性 bug）"
+}
+
+rm -f "$WORKDIR/gw/call_log.txt"
+echo "ok" > "$WORKDIR/gw/agent_run_mode.txt"
+start_chat_dispatch 5000
+
+reap_round 1 \
+  "50000000-0000-0000-0000-0000000000f1" "40000000-0000-0000-0000-0000000000f2" \
+  "50000000-0000-0000-0000-0000000000f2" "40000000-0000-0000-0000-0000000000f4" \
+  "40000000-0000-0000-0000-0000000000f5"
+
+# 第二輪：獨立、新插入的另一筆孤兒紀錄，用同一個持續執行中的 chat-dispatch process
+# 再清掃一次，證明這個機制是「每次呼叫都會做」的常態行為，不是啟動時才跑一次性的
+# 初始化邏輯、也不是上一輪剛好把某個全域旗標用掉了才「看起來」成功。
+reap_round 2 \
+  "50000000-0000-0000-0000-0000000000f6" "40000000-0000-0000-0000-0000000000f7" \
+  "50000000-0000-0000-0000-0000000000f8" "40000000-0000-0000-0000-0000000000f9" \
+  "40000000-0000-0000-0000-0000000000fa"
+
+kill "$(cat "$WORKDIR/dispatch.pid")" 2>/dev/null || true
+sleep 1
+
+echo ""
+echo "=== [項目 7] agent-run-reaper 備援端點：只接受 service_role 呼叫，一般使用者呼叫要被拒絕 ==="
+REAPER_STUB="$WORKDIR/agent_run_reaper_stub.ts"
+cat > "$REAPER_STUB" <<DENO
+await import("$REPO_ROOT/supabase/functions/agent-run-reaper/index.ts");
+DENO
+(
+  SUPABASE_URL=http://localhost:3412 \
+  SUPABASE_SERVICE_ROLE_KEY="$JWT_SERVICE" \
+  SUPABASE_ANON_KEY="$JWT_ANON" \
+  ALLOWED_ORIGINS=http://localhost:5173 \
+    "$DENO_BIN" run --node-modules-dir=none --allow-net --allow-env "$REAPER_STUB" \
+      > "$WORKDIR/agent_run_reaper.log" 2>&1 &
+  echo $! > "$WORKDIR/agent_run_reaper.pid"
+)
 sleep 2
-ORPHAN_STATUS=$($PSQL -tAc "select status from agent_runs where id='$ORPHAN_RUN';")
-if [ "$ORPHAN_STATUS" = "queued" ]; then
-  fail_but_documented=1
-  echo "  ⚠ 確認結果：這筆紀錄的狀態仍然是 queued，沒有任何背景機制把它標成 failed 或重新"
-  echo "  觸發——這是真實的殘留風險，不是這次修正的範圍（見整合測試報告『未達標／後續工作』），"
-  echo "  使用者會看到這則訊息永遠停在『OOO 回覆中…』，除非使用者對同一則訊息的 chat-dispatch"
-  echo "  再被呼叫一次（目前沒有對應的 UI 動作，例如沒有『重新派送』按鈕）。"
-  pass "（如實記錄，非測試失敗）確認目前架構下沒有 queued 孤兒紀錄的逾時修復機制，已列入整合報告的殘留風險"
-else
-  fail "預期這筆模擬孤兒紀錄應該仍是 queued（沒有背景機制動它），實際變成了 $ORPHAN_STATUS——如果真的有機制在動它，需要回頭確認是什麼機制、找到後更新這裡的測試假設"
-fi
+REAPER_PID=$(cat "$WORKDIR/agent_run_reaper.pid")
+
+CODE_USER=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_A" -H "Content-Type: application/json" -d "{}")
+[ "$CODE_USER" = "403" ] && pass "一般使用者 JWT 呼叫 agent-run-reaper 被拒（HTTP 403）" || fail "應該回 403，實際是 $CODE_USER"
+
+ORPHAN_RUN_REAPER="50000000-0000-0000-0000-0000000000fb"
+ORPHAN_MSG_REAPER="40000000-0000-0000-0000-0000000000fc"
+$PSQL -c "insert into messages (id, room_id, sender_type, sender_user_id, content, created_at) values ('$ORPHAN_MSG_REAPER','$ROOM_A','user','$UID_A','orphaned for reaper endpoint', now() - interval '2 hours');"
+$PSQL -c "insert into agent_runs (id, room_id, agent_id, trigger_message_id, status, created_at, updated_at) values ('$ORPHAN_RUN_REAPER','$ROOM_A','$AGENT_A','$ORPHAN_MSG_REAPER','queued', now() - interval '2 hours', now() - interval '2 hours');"
+
+RESP_SERVICE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/" -H "Authorization: Bearer $JWT_SERVICE" -H "Content-Type: application/json" -d "{}")
+CODE_SERVICE=$(echo "$RESP_SERVICE" | tail -1)
+echo "  service_role 呼叫回應（HTTP $CODE_SERVICE）：$(echo "$RESP_SERVICE" | head -n -1)"
+[ "$CODE_SERVICE" = "200" ] && pass "service_role 呼叫 agent-run-reaper 成功（HTTP 200）" || fail "應該成功，實際是 HTTP $CODE_SERVICE"
+STATUS_REAPER=$($PSQL -tAc "select status from agent_runs where id='$ORPHAN_RUN_REAPER';")
+[ "$STATUS_REAPER" = "failed" ] && pass "獨立 agent-run-reaper 端點也能清掃孤兒 queued 紀錄" || fail "孤兒紀錄狀態是 $STATUS_REAPER（應該是 failed）"
+
+kill "$REAPER_PID" 2>/dev/null || true
+sleep 1
 
 echo ""
 if [ "$FAIL" = "0" ]; then

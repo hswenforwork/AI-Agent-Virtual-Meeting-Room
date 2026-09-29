@@ -12,6 +12,7 @@ import { jsonError } from "../_shared/errors.ts";
 import { supabaseAdmin, supabaseAsUser } from "../_shared/supabaseAdmin.ts";
 import { createAnthropicProvider } from "../_shared/providers/anthropic.ts";
 import { getUserProviderKey, type ProviderSlug } from "../_shared/vault.ts";
+import { reapStaleQueuedAgentRuns } from "../_shared/agentRunReaper.ts";
 
 const MAX_AGENT_RUNS_PER_MESSAGE = Number(Deno.env.get("MAX_AGENT_RUNS_PER_MESSAGE") ?? "4");
 const AGENT_RUN_FETCH_TIMEOUT_MS = Number(Deno.env.get("AGENT_RUN_FETCH_TIMEOUT_MS") ?? "10000");
@@ -42,6 +43,13 @@ Deno.serve(async (req) => {
     if (!user) return jsonError("登入已過期，請重新登入", 401, "unauthenticated", headers);
 
     const admin = supabaseAdmin();
+
+    // 項目 7 修正（孤兒 queued 紀錄）：見 _shared/agentRunReaper.ts 的說明——
+    // chat-dispatch 是全站呼叫頻率最高的入口，這裡順手清掃一次全域逾時仍卡在
+    // queued 的紀錄，不等這次請求本身的訊息/代理有沒有關係。清掃失敗（例如
+    // admin 查詢本身出錯）不應該擋住這次正常的訊息派送，錯誤已經在 reaper
+    // 內部記錄，這裡不重複拋出。
+    await reapStaleQueuedAgentRuns(admin);
 
     const { data: message, error: messageErr } = await admin
       .from("messages")

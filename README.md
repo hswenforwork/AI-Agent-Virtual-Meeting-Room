@@ -51,9 +51,11 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
    - `supabase/migrations/0018_worker_task_notebook_tool.sql`（工作型代理寫進記事本/待辦事項，見下方「附加設定」）
    - `supabase/migrations/0019_cross_account_security_fixes.sql`（跨帳號權限隔離修正：自行加入別人房間、
      跨房間點名、核准競態，**必要修正，不是選用附加設定**，新建立的專案也要套用）
-   - `supabase/migrations/0020_shared_knowledge.sql`（跨聊天室共享知識系統，見下方「附加設定」）
+   - `supabase/migrations/0020_shared_knowledge.sql`（跨聊天室共享知識系統，**必要修正**——
+     `agent-run`／`worker-task-start` 這兩個 Edge Function 只要房間有 owner（幾乎每個房間都有）
+     就會無條件查詢這裡建立的資料表，見下方「附加設定：跨聊天室共享知識系統」的說明）
    - `supabase/migrations/0021_knowledge_retrieval_indexes.sql`（跟隨 0020 的知識檢索效能索引，
-     有套用 0020 才需要這個）
+     套用 0020 就要一併套用這個，**必要修正**）
    - `supabase/migrations/0022_agent_run_dispatch_idempotency.sql`（訊息派送冪等，防止同一則訊息
      重複觸發同一個代理回覆，**必要修正**）
    - `supabase/migrations/0023_send_message_with_mentions.sql`（訊息本體與 @提及 原子寫入，
@@ -62,12 +64,19 @@ Claude／GPT／Gemini 三家都可以用——每個使用者在網頁「設定�
      **必要修正**）
    - `supabase/migrations/0025_usage_daily_atomic_increment.sql`（用量統計原子累加，避免併發低估，
      **必要修正**）
+   - `supabase/migrations/0026_agent_run_reaper_index.sql`（孤兒 queued 紀錄清掃用的效能索引，
+     見下方「附加設定：孤兒 queued 紀錄排程復原」，**必要修正**——清掃邏輯沒有這個索引也能
+     正確運作，但沒有索引的全站掃描效率會隨 agent_runs 資料量增加而變差）
 
-   > **已經是既有專案（資料庫已經套用過 0001~0018）**：`0019`、`0022`、`0023`、`0024`、`0025`
-   > 這五個標「必要修正」的 migration 請務必依序補套用，不是可以跳過的選用附加設定——分別修正
-   > 跨帳號權限隔離漏洞、訊息重複派送、訊息半成品寫入、對話摘要漏訊息、用量統計併發低估。
-   > `0020`／`0021`（共享知識系統）才是真正選用，看下方「附加設定：跨聊天室共享知識系統」
-   > 再決定要不要套用。
+   > **已經是既有專案（資料庫已經套用過 0001~0018）**：`0019`、`0020`、`0021`、`0022`、`0023`、
+   > `0024`、`0025`、`0026` 這八個標「必要修正」的 migration 請務必依序補套用，不是可以跳過的
+   > 選用附加設定——分別修正跨帳號權限隔離漏洞、（`0020`／`0021`）補上 `agent-run`／
+   > `worker-task-start` 已經無條件依賴的共享知識資料表、訊息重複派送、訊息半成品寫入、
+   > 對話摘要漏訊息、用量統計併發低估、孤兒 queued 紀錄清掃效能。
+   > `0020`／`0021` 曾經被本文件列為「選用附加設定」，但程式碼早已不是這樣寫——沒套用的話，
+   > 聊天室裡每一次 AI 回覆（`agent-run`）跟每一次工作型代理任務（`worker-task-start`）都會
+   > 直接因為資料表不存在而失敗，不是「少一個附加功能」而已，見
+   > `scripts/integration-abc-knowledge-required-test.sh` 的驗證。
 3. 到 **Project Settings → API**（新版介面可能是 **Settings → API Keys** / **Settings → Data API**，或直接點專案頁面右上角的 **Connect** 按鈕），記下：
    - `Project URL`（等一下是 `VITE_SUPABASE_URL`）
    - `anon public` key（等一下是 `VITE_SUPABASE_ANON_KEY`）
@@ -244,7 +253,7 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
 **已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，貼上並執行
 `supabase/migrations/0018_worker_task_notebook_tool.sql`（新建立的專案照步驟 1 的清單做過一次就夠了）。
 
-### 附加設定：跨聊天室共享知識系統（選用但建議）
+### 附加設定：跨聊天室共享知識系統（必要修正，不是選用附加設定）
 
 新增「共享知識」分頁：由你自己確認的長期背景（目標／專案／用語／工作規則／事實）、只追加
 的決策紀錄（取代舊決策要明確指定，不會悄悄覆蓋）、每則知識/決策的來源索引（區分「知道
@@ -253,9 +262,20 @@ AI 直接寫入記事本／待辦事項（或工作型代理把產出檔案登�
 跟記事本/待辦事項一樣是跨聊天室共用（依帳號、不依房間），設計與借鏡對照見
 [`docs/AI-Partner借鏡對照.md`](docs/AI-Partner借鏡對照.md)。
 
-**已經是既有專案（資料庫已經在跑）**：到 Supabase Dashboard 的 **SQL Editor**，依序貼上並執行
+> ⚠️ 這個標題還留著「附加設定」字樣只是沿用既有章節位置，**內容本身已經不是選用的**：
+> `supabase/functions/agent-run/index.ts` 跟 `supabase/functions/worker-task-start/index.ts`
+> 這兩個負責「AI 真的回覆訊息」跟「工作型代理執行任務」的 Edge Function，只要訊息所在的
+> 房間有 `owner_id`（`rooms.owner_id`，正常情況下每個房間都有）就會無條件呼叫
+> `buildKnowledgeContext()` 查詢這裡的資料表，沒有任何 if 判斷或 try/catch 可以略過。
+> 跳過 `0020`／`0021` 不會讓「共享知識」分頁變成空的而已，而是讓 `agent-run`／
+> `worker-task-start` 在真實使用情境下的每一次呼叫都直接因為資料表不存在而整個失敗——
+> 也就是聊天室完全不會回覆。已經用 `scripts/integration-abc-knowledge-required-test.sh`
+> 驗證過這個行為（套用到 0019 為止時查詢直接報 `relation "knowledge_items" does not exist`，
+> 補套用 0020／0021 後同一個查詢才會成功）。
+
+**任何專案（新建立或既有專案）都要套用**：到 Supabase Dashboard 的 **SQL Editor**，依序貼上並執行
 `supabase/migrations/0020_shared_knowledge.sql`、`supabase/migrations/0021_knowledge_retrieval_indexes.sql`
-（新建立的專案照步驟 1 的清單做過一次就夠了）。
+（新建立的專案照步驟 1 的清單做過一次就夠了，不用在這裡重複）。
 
 **這個 migration 也會新增兩個 Edge Function**（`.github/workflows/deploy-functions.yml` 會自動
 部署，不用手動處理）：
@@ -304,6 +324,57 @@ select cron.schedule(
 多個使用者要各自排一份（`cron.schedule` 名稱要不同），這個 repo 沒有另外做「幫所有帳號各跑
 一次」的批次版本。
 
+### 附加設定：孤兒 queued 紀錄排程復原（選用，加強保險）
+
+聊天室發訊息時，`chat-dispatch` 會建立一筆 `queued` 的 `agent_runs` 紀錄，再觸發真正呼叫
+AI 的 `agent-run`。如果 `chat-dispatch` 這次執行在「建立好那筆紀錄」之後、「開始觸發
+`agent-run`」之前就被平台強制中止（例如 isolate 被提前回收），這筆紀錄會卡在 `queued`，
+使用者會看到訊息永遠停在「OOO 回覆中…」。修正方式是 `supabase/functions/_shared/
+agentRunReaper.ts` 的 `reapStaleQueuedAgentRuns()`：`chat-dispatch` 每次被呼叫時都會先
+順手清掃一次全站逾時（預設 5 分鐘）仍是 `queued` 的紀錄，不限同一則訊息或同一個房間——
+因為 `chat-dispatch` 是全站呼叫頻率最高的入口，這樣就能讓卡住的紀錄很快被標成 `failed`，
+不需要另外的排程。
+
+**這個 migration 也會新增一個 Edge Function**（`.github/workflows/deploy-functions.yml`
+會自動部署，不用手動處理）：
+
+- `agent-run-reaper`：只接受 `service_role` key 呼叫，手動或排程觸發都可以，效果跟
+  `chat-dispatch` 的順手清掃完全一樣（呼叫同一個 `reapStaleQueuedAgentRuns()`）。
+
+**選用：完全沒人發訊息的房間排程備援**（這個 repo 不會幫你打開，你要自己決定要不要）。
+上面「順手清掃」只有在**有人發訊息、觸發 `chat-dispatch`** 時才會執行；如果一個房間長時間
+完全沒有新訊息，裡面卡住的孤兒紀錄不會有人去清掃（不過也不會有新使用者看到它，因為它
+本來就是舊訊息的殘留狀態）。如果想加一層保險，可以排程直接呼叫 `agent-run-reaper`：
+
+跟 `knowledge-audit` 排程一樣，這裡也要用 Supabase Vault 存 `service_role` key（**不要直接
+寫在 SQL 裡**），但不需要帶 `ownerId`——孤兒 `agent_runs` 的判定是全站範圍的派送狀態，
+不是某個使用者名下的資料：
+
+```sql
+-- 1. 確認 pg_cron 與 pg_net 兩個 extension 已啟用（Database → Extensions）
+
+-- 2. 把 service_role key 存進 Vault（如果已經因為 knowledge-audit 排程做過這一步，
+--    可以直接重複使用同一個 vault.create_secret 存的值，不用存第二份）
+select vault.create_secret('<service-role-key>', 'agent_run_reaper_service_key');
+
+-- 3. 建立排程（範例：每 10 分鐘一次；<project-ref> 換成你的專案 ref）
+select cron.schedule(
+  'agent-run-reaper-every-10-min',
+  '*/10 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://<project-ref>.functions.supabase.co/agent-run-reaper',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'agent_run_reaper_service_key'),
+      'content-type', 'application/json'
+    )
+  );
+  $$
+);
+```
+
+要停用時執行 `select cron.unschedule('agent-run-reaper-every-10-min');`。
+
 ### 步驟 3：部署 Edge Functions（建議：用 GitHub Actions 自動部署）
 
 `.github/workflows/deploy-functions.yml` 已經設定好，只要 repo 有兩個 Secrets，push 到 `main`
@@ -325,6 +396,7 @@ npx supabase@latest link --project-ref <你的專案 ref>
 npx supabase@latest functions deploy chat-dispatch
 npx supabase@latest functions deploy agent-run
 npx supabase@latest functions deploy agent-run-stop
+npx supabase@latest functions deploy agent-run-reaper
 npx supabase@latest functions deploy approval-decide
 npx supabase@latest functions deploy file-register
 npx supabase@latest functions deploy worker-task-start
