@@ -20,6 +20,9 @@ const FILE_CONTEXT_MAX_CHARS = 6000;
 // 官方文件都提到一頁至少兩三百 token 起跳），先保守只帶最近 2 份，避免單次請求就把
 // 上下文塞爆或超過供應商的請求大小上限。
 const PDF_CONTEXT_MAX_FILES = 2;
+// 項目 12 修正：候選池上限，避免使用者名下 PDF 很多時整批撈出來比對，跟
+// knowledgeContext.ts 的 MATCHED_POOL_CAP 同樣的保守設計。
+const PDF_CANDIDATE_POOL_CAP = 50;
 
 const TASK_STATUS_LABEL: Record<string, string> = {
   todo: "待辦",
@@ -110,23 +113,50 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+// 項目 12 修正（PDF 僅按需送出）：原本不管這次對話內容跟哪份 PDF 有沒有關係，每一次
+// agent-run 都無條件下載、base64 附加使用者名下最近的 PDF——PDF 原生文件輸入是三家
+// 供應商公認很貴的輸入型態（見上方 PDF_CONTEXT_MAX_FILES 的說明，一頁至少兩三百
+// token），使用者只是問一句「今天天氣如何」也會被夾帶一份完全無關的 PDF，白白花錢。
+// 這裡改成跟 knowledgeContext.ts 的關鍵字比對同一種精神：只有這次對話最近提到的檔名，
+// 才會被當作「使用者這次真的需要這份 PDF」而附加；完全沒有提到任何檔名時回傳空陣列，
+// 不會退回「猜使用者可能要哪份」這種容易誤判又照樣花錢的 fallback。
+export function isFileNameReferencedInText(recentText: string, fileName: string): boolean {
+  const haystack = recentText.toLowerCase();
+  const trimmedName = fileName.trim();
+  if (!trimmedName) return false;
+  if (haystack.includes(trimmedName.toLowerCase())) return true;
+
+  // 使用者常常不會把副檔名也打出來（例如打「季報」而不是「季報.pdf」），這裡額外比對
+  // 去掉副檔名之後的檔名本體；但長度太短（例如檔名只有「a.pdf」去掉副檔名剩「a」）
+  // 容易在任何對話裡都命中，形同沒有比對，所以要求至少 2 個字元才納入比對。
+  const withoutExtension = trimmedName.replace(/\.[^.]+$/, "").trim();
+  if (withoutExtension.length >= 2 && haystack.includes(withoutExtension.toLowerCase())) return true;
+
+  return false;
+}
+
 // PDF 不進 buildFileContext 的文字切段流程（file-register 從來不對 PDF 做文字擷取），
 // 改成把檔案本體下載下來、轉 base64，讓 provider adapter 當作原生文件輸入附加到請求裡
 // （brainstorms/2026-09-23-gpt-audit-followups.md Q14/Q15）。
-export async function buildPdfDocuments(admin: AdminClient, ownerId: string): Promise<DocumentAttachment[]> {
-  const { data: files } = await admin
+export async function buildPdfDocuments(admin: AdminClient, ownerId: string, recentText: string): Promise<DocumentAttachment[]> {
+  const { data: candidates } = await admin
     .from("files")
     .select("bucket, object_path, name")
     .eq("owner_id", ownerId)
     .eq("status", "active")
     .eq("mime_type", "application/pdf")
     .order("created_at", { ascending: false })
-    .limit(PDF_CONTEXT_MAX_FILES);
+    .limit(PDF_CANDIDATE_POOL_CAP);
 
-  if (!files || files.length === 0) return [];
+  if (!candidates || candidates.length === 0) return [];
+
+  const referenced = candidates
+    .filter((file) => isFileNameReferencedInText(recentText, file.name))
+    .slice(0, PDF_CONTEXT_MAX_FILES);
+  if (referenced.length === 0) return [];
 
   const documents: DocumentAttachment[] = [];
-  for (const file of files) {
+  for (const file of referenced) {
     const { data: blob, error } = await admin.storage.from(file.bucket).download(file.object_path);
     if (error || !blob) {
       console.error("下載 PDF 以附加原生文件輸入失敗", file.object_path, error);
